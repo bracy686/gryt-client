@@ -1,8 +1,7 @@
 name: 打包 Windows 中文版
 
-# 只做一件事：在 GitHub 的 Windows runner 上把中文版客户端打成安装包（NSIS）+ 便携版 exe。
-# 上游的 Release 流程依赖一堆 fork 里没有的 secret（GHCR、微软商店、Discord、签名证书），
-# 这里全部去掉，只保留出包必需的原生编译（MSVC + Go）与 electron-builder。
+# 在 GitHub 的 Windows runner 上把中文版客户端打成安装包（NSIS）+ 便携版 exe。
+# 上游 Release 流程依赖 fork 里没有的 secret（GHCR/商店/Discord/签名证书），这里只留出包必需的原生编译与 electron-builder。
 
 on:
   workflow_dispatch:
