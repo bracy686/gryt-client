@@ -15,7 +15,9 @@ import path from "node:path";
 import ts from "typescript";
 import { rewrite, scan, scriptKindFor } from "./lib.mjs";
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+// 用 import.meta.dirname，别用 new URL(import.meta.url).pathname：Windows 上后者会变成
+// "/D:/a/..."，再 path.resolve 就拼成 "D:\D:\a\..."，CI 上直接 ENOENT。
+const ROOT = path.resolve(import.meta.dirname, "..");
 const dict = JSON.parse(fs.readFileSync(path.join(ROOT, "zh/dict.zh.json"), "utf8"));
 
 const SKIP_DIRS = new Set(["node_modules", "dist", "dist-electron", "release", ".git", "zh", "out"]);
