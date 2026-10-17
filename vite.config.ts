@@ -8,7 +8,6 @@ import renderer from "vite-plugin-electron-renderer";
 import tsconfigPaths from "vite-tsconfig-paths";
 
 import pkg from "./package.json";
-
 import { zhCN } from "./zh/plugin.mjs";
 
 /**
