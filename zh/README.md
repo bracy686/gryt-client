@@ -5,6 +5,16 @@
 1. `vite.config.ts` —— 引入本插件：`import { zhCN } from "./zh/plugin.mjs"`，然后在 `plugins` 和四个 electron 子构建里各加一行 `zhCN()`。
 2. `electron/main.ts:1113` —— 更新源从 `Gryt-chat/gryt` 改成本仓库。否则「检查更新」会把官方英文包装回来，中文界面被覆盖。
 
+## 开关：GRYT_ZH
+
+插件**默认不生效**，要出中文版必须显式开：
+
+```
+GRYT_ZH=1 ELECTRON=1 npx vite build
+```
+
+为什么默认关：上游自带的 e2e 测试用英文可访问名找元素（`e2e/support/app.ts` 里的 `getByRole("button", { name: "Add a server" })`），界面一换中文，8 个 e2e 分片全挂。默认关掉，上游 CI 保持绿；出中文包的流水线在 job 级 env 里设 `GRYT_ZH: "1"`。
+
 ## 怎么工作
 
 `zh/plugin.mjs` 在**构建期**用 TypeScript 的 AST 解析每个模块，只在下面这些「确定会显示给用户」的位置上找字符串：
@@ -30,6 +40,8 @@ node zh/check.mjs              # 体检：覆盖率、失效条目、未译清�
 node zh/check.mjs --top 40     # 列出现次数最多的未译条目
 node zh/check.mjs --stale      # 只列失效条目（上游改了文案或键打错）
 ELECTRON=1 npx vite build      # 本地构建（含主进程），产物在 dist/ 与 dist-electron/
+GRYT_ZH=1 ELECTRON=1 npx vite build   # 中文构建（不设 GRYT_ZH 就是英文）
+node zh/selftest.mjs           # 改写安全体检：只许文案变，结构与语法必须不变
 ```
 
 ## 上游更新后怎么跟进

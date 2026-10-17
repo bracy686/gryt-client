@@ -30,6 +30,8 @@ jobs:
       ELECTRON: "1"
       GRYT_VARIANT: ${{ inputs.variant }}
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      # 中文替换开关（插件默认关，避免上游 e2e 因界面变中文而挂）。
+      GRYT_ZH: "1"
     steps:
       - uses: actions/checkout@v4
 

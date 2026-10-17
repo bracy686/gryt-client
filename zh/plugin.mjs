@@ -18,11 +18,33 @@ export function loadDict(dictPath) {
 }
 
 /**
+ * 开关：默认关，GRYT_ZH=1 才替换文案。
+ *
+ * 为什么默认关：上游自带的 e2e 测试是拿英文可访问名找元素的
+ * （e2e/support/app.ts: getByRole("button", { name: "Add a server" })），
+ * 界面一换成中文，那 8 个分片全挂。默认关掉，上游 CI 保持绿；
+ * 出中文包的流水线里显式设 GRYT_ZH=1。
+ */
+export function isZhEnabled() {
+  return /^(1|true|yes|on)$/i.test(process.env.GRYT_ZH ?? "");
+}
+
+/**
  * @param {object} [options]
  * @param {string} [options.dictPath] 字典路径，默认 <root>/zh/dict.zh.json
  * @param {boolean} [options.report]  把未命中的候选写到 zh/unmatched.json
  */
 export function zhCN(options = {}) {
+  if (!isZhEnabled()) {
+    return {
+      name: "gryt-zh-cn",
+      enforce: "pre",
+      buildStart() {
+        this.info?.("[zh-cn] 未启用：要出中文版请设 GRYT_ZH=1");
+      },
+    };
+  }
+
   const root = options.root ?? process.cwd();
   const dictPath = options.dictPath ?? path.join(root, "zh", "dict.zh.json");
   const stats = { files: 0, hits: 0, misses: 0, byKind: {}, missKeys: new Map() };
