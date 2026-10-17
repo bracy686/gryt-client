@@ -227,6 +227,16 @@ export function rewrite(code, file, dict, onHit, onMiss) {
   const items = scan(code, file);
   if (items.length === 0) return code;
 
+  const sf = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true, scriptKindFor(file));
+  // 模板串里可能嵌着别的模板串或字符串：这些内层区间由外层模板的递归改写负责，
+  // 否则两个编辑区间重叠，按原始偏移量切片会把后面的代码切掉。
+  const templateRanges = [];
+  for (const it of items) {
+    if (it.kind === "template" && typeof dict[it.key] === "string") templateRanges.push([it.start, it.end]);
+  }
+  const insideTemplate = (item) =>
+    templateRanges.some(([s, e]) => item.start >= s && item.end <= e && !(item.start === s && item.end === e));
+
   const edits = [];
   for (const item of items) {
     const zh = dict[item.key];
@@ -234,12 +244,12 @@ export function rewrite(code, file, dict, onHit, onMiss) {
       if (onMiss) onMiss(item, file);
       continue;
     }
+    if (insideTemplate(item)) continue;
     if (item.kind === "template") {
-      const exprSources = [];
-      const sf = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true, scriptKindFor(file));
       const node = findTemplateAt(sf, item.start);
       if (!node) continue;
-      node.templateSpans.forEach((span) => exprSources.push(span.expression.getText(sf)));
+      // 表达式内部（如三元里的另一个模板串）先各自过一遍同样的替换。
+      const exprSources = node.templateSpans.map((span) => rewrite(span.expression.getText(sf), file, dict, onHit, onMiss));
       const rebuilt = rebuildTemplate(zh, exprSources);
       if (!rebuilt) {
         if (onMiss) onMiss({ ...item, key: item.key, reason: "placeholder-mismatch" }, file);
@@ -262,9 +272,15 @@ export function rewrite(code, file, dict, onHit, onMiss) {
   }
 
   if (edits.length === 0) return code;
+  // 从后往前切，保证前面编辑的偏移量不受影响；有重叠就跳过（前面已排除嵌套模板的情形）。
   edits.sort((a, b) => b.start - a.start);
   let result = code;
-  for (const e of edits) result = result.slice(0, e.start) + e.text + result.slice(e.end);
+  let lastStart = Infinity;
+  for (const e of edits) {
+    if (e.end > lastStart) continue;
+    result = result.slice(0, e.start) + e.text + result.slice(e.end);
+    lastStart = e.start;
+  }
   return result;
 }
 

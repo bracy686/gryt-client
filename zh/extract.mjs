@@ -49,62 +49,73 @@ function loadDict() {
 const srcOnly = process.argv.includes("--src-only");
 const targets = srcOnly ? TARGETS.filter((t) => !t.dir.startsWith("node_modules")) : TARGETS;
 
-const dict = loadDict();
-const byKey = new Map();
-let filesScanned = 0;
-let candidates = 0;
+/** 扫描全部目标文件，返回候选清单（check.mjs 也直接用它，不必依赖中间文件）。 */
+export function collect(targetList = targets) {
+  const byKey = new Map();
+  let filesScanned = 0;
+  let candidates = 0;
 
-for (const target of targets) {
-  for (const file of walk(path.join(ROOT, target.dir), target.exts)) {
-    const rel = path.relative(ROOT, file);
-    let code;
-    try {
-      code = fs.readFileSync(file, "utf8");
-    } catch {
-      continue;
-    }
-    filesScanned++;
-    let items;
-    try {
-      items = scan(code, rel);
-    } catch (err) {
-      console.error(`扫描失败 ${rel}: ${err.message}`);
-      continue;
-    }
-    candidates += items.length;
-    for (const item of items) {
-      const entry = byKey.get(item.key) ?? { key: item.key, kinds: new Set(), count: 0, where: [] };
-      entry.kinds.add(item.kind);
-      entry.count++;
-      if (entry.where.length < 5 && !entry.where.includes(rel)) entry.where.push(rel);
-      byKey.set(item.key, entry);
+  for (const target of targetList) {
+    for (const file of walk(path.join(ROOT, target.dir), target.exts)) {
+      const rel = path.relative(ROOT, file);
+      let code;
+      try {
+        code = fs.readFileSync(file, "utf8");
+      } catch {
+        continue;
+      }
+      filesScanned++;
+      let items;
+      try {
+        items = scan(code, rel);
+      } catch (err) {
+        console.error(`扫描失败 ${rel}: ${err.message}`);
+        continue;
+      }
+      candidates += items.length;
+      for (const item of items) {
+        const entry = byKey.get(item.key) ?? { key: item.key, kinds: new Set(), count: 0, where: [] };
+        entry.kinds.add(item.kind);
+        entry.count++;
+        if (entry.where.length < 5 && !entry.where.includes(rel)) entry.where.push(rel);
+        byKey.set(item.key, entry);
+      }
     }
   }
+
+  const items = [...byKey.values()]
+    .map((e) => ({ key: e.key, kinds: [...e.kinds].sort(), count: e.count, where: e.where }))
+    .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+
+  return { filesScanned, candidates, uniqueKeys: items.length, items };
 }
 
-const items = [...byKey.values()]
-  .map((e) => ({ key: e.key, kinds: [...e.kinds].sort(), count: e.count, where: e.where }))
-  .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+const dict = loadDict();
 
-const untranslated = items.filter((i) => typeof dict[i.key] !== "string");
+// 只有直接运行时才写文件/打印；被 check.mjs import 时不产生副作用。
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === import.meta.filename;
+if (isMain) {
+  const { filesScanned, candidates, items } = collect();
+  const untranslated = items.filter((i) => typeof dict[i.key] !== "string");
 
-fs.writeFileSync(
-  path.join(ZH, "inventory.json"),
-  JSON.stringify(
-    {
-      generatedAt: new Date().toISOString(),
-      filesScanned,
-      candidates,
-      uniqueKeys: items.length,
-      translated: items.length - untranslated.length,
-      items,
-    },
-    null,
-    2,
-  ) + "\n",
-);
-fs.writeFileSync(path.join(ZH, "untranslated.json"), JSON.stringify({ generatedAt: new Date().toISOString(), items: untranslated }, null, 2) + "\n");
+  fs.writeFileSync(
+    path.join(ZH, "inventory.json"),
+    JSON.stringify(
+      {
+        generatedAt: new Date().toISOString(),
+        filesScanned,
+        candidates,
+        uniqueKeys: items.length,
+        translated: items.length - untranslated.length,
+        items,
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+  fs.writeFileSync(path.join(ZH, "untranslated.json"), JSON.stringify({ generatedAt: new Date().toISOString(), items: untranslated }, null, 2) + "\n");
 
-console.log(`文件 ${filesScanned} 个，候选 ${candidates} 处，去重 ${items.length} 条`);
-console.log(`已译 ${items.length - untranslated.length} 条，待译 ${untranslated.length} 条`);
-console.log(`产物：zh/inventory.json、zh/untranslated.json`);
+  console.log(`文件 ${filesScanned} 个，候选 ${candidates} 处，去重 ${items.length} 条`);
+  console.log(`已译 ${items.length - untranslated.length} 条，待译 ${untranslated.length} 条`);
+  console.log(`产物：zh/inventory.json、zh/untranslated.json`);
+}

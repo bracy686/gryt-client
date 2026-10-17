@@ -61,8 +61,10 @@ jobs:
         run: yarn helper:build
 
       - name: 汉化体检（覆盖率、失效条目）
-        run: node zh/check.mjs
-        continue-on-error: true
+        run: node zh/check.mjs --min-coverage 85
+
+      - name: 改写安全体检（只动文案，不动结构）
+        run: node zh/selftest.mjs
 
       - name: 构建前端与主进程
         run: npx cross-env ELECTRON=1 vite build
@@ -86,7 +88,7 @@ jobs:
             const fs = require("fs");
             const p = "release/win-unpacked/resources/app.asar";
             const s = fs.readFileSync(p).toString("utf8");
-            const probes = ["取消", "设置", "检查更新", "关闭"];
+            const probes = ["取消", "设置", "检查更新", "添加服务器", "带我逛逛"];
             const miss = probes.filter((x) => !s.includes(x));
             if (miss.length) { console.error("app.asar 缺少中文串：" + miss.join("、")); process.exit(1); }
             console.log("app.asar 内含中文，OK");
