@@ -9,6 +9,8 @@ import tsconfigPaths from "vite-tsconfig-paths";
 
 import pkg from "./package.json";
 
+import { zhCN } from "./zh/plugin.mjs";
+
 /**
  * Copies MediaPipe's WASM into public/ so it is served from our own origin.
  *
@@ -89,6 +91,7 @@ export default defineConfig({
     exclude: ["@gryt/voice"],
   },
   plugins: [
+    zhCN(),
     react(),
     tailwindcss(),
     tsconfigPaths(),
@@ -99,6 +102,7 @@ export default defineConfig({
             {
               entry: "electron/main.ts",
               vite: {
+                plugins: [zhCN()],
                 build: {
                   outDir: "dist-electron",
                   rollupOptions: { external: ["electron", "uiohook-napi"] },
@@ -111,6 +115,7 @@ export default defineConfig({
                 reload();
               },
               vite: {
+                plugins: [zhCN()],
                 build: {
                   outDir: "dist-electron",
                   lib: {
@@ -135,6 +140,7 @@ export default defineConfig({
             {
               entry: "electron/mediaSandboxPreload.ts",
               vite: {
+                plugins: [zhCN()],
                 build: {
                   outDir: "dist-electron",
                   emptyOutDir: false,
@@ -152,6 +158,7 @@ export default defineConfig({
               // The sandbox page: plain browser code, with mediabunny bundled in and nothing loaded at run time.
               entry: "electron/mediaSandboxPage.ts",
               vite: {
+                plugins: [zhCN()],
                 build: {
                   outDir: "dist-electron",
                   emptyOutDir: false,

@@ -1,0 +1,103 @@
+name: 打包 Windows 中文版
+
+# 只做一件事：在 GitHub 的 Windows runner 上把中文版客户端打成安装包（NSIS）+ 便携版 exe。
+# 上游的 Release 流程依赖一堆 fork 里没有的 secret（GHCR、微软商店、Discord、签名证书），
+# 这里全部去掉，只保留出包必需的原生编译（MSVC + Go）与 electron-builder。
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "变体：slim = 不含内置服务器（推荐，体积小）；full = 含内置服务器"
+        type: choice
+        default: slim
+        options:
+          - slim
+          - full
+      tag:
+        description: "产物名字里的后缀（默认 zh-cn）"
+        required: false
+        default: zh-cn
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    # 上游特意锁在 windows-2022，注释说明别随便换成 windows-latest（node-gyp 探针会变）。
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      ELECTRON: "1"
+      GRYT_VARIANT: ${{ inputs.variant }}
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: yarn
+
+      # gryt-helper.exe 是 Go 编的；脚本自己会按 GOTOOLCHAIN 拉需要的工具链。
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      # 屏幕共享的音频过滤 exe 要 MSVC。
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: 安装依赖
+        run: yarn install --frozen-lockfile --ignore-engines
+
+      - name: 生成图标
+        run: yarn icons:generate
+
+      - name: 编译原生组件（音频/屏幕捕获）
+        shell: cmd
+        run: 'native\build.bat'
+
+      - name: 编译 gryt-helper（Go）
+        run: yarn helper:build
+
+      - name: 汉化体检（覆盖率、失效条目）
+        run: node zh/check.mjs
+        continue-on-error: true
+
+      - name: 构建前端与主进程
+        run: npx cross-env ELECTRON=1 vite build
+
+      - name: 打包（NSIS 安装包 + 便携版）
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          TAG='${{ inputs.tag }}'
+          npx electron-builder --config electron-builder.config.cjs \
+            --win nsis portable --publish never \
+            -c.extraMetadata.version="$VERSION" \
+            -c.artifactName="Gryt-Chat-\${version}-win-\${arch}-${TAG}.\${ext}" \
+            -c.portable.artifactName="Gryt-Chat-\${version}-win-\${arch}-${TAG}-portable.\${ext}"
+
+      - name: 校验产物里确实有中文
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs");
+            const p = "release/win-unpacked/resources/app.asar";
+            const s = fs.readFileSync(p).toString("utf8");
+            const probes = ["取消", "设置", "检查更新", "关闭"];
+            const miss = probes.filter((x) => !s.includes(x));
+            if (miss.length) { console.error("app.asar 缺少中文串：" + miss.join("、")); process.exit(1); }
+            console.log("app.asar 内含中文，OK");
+          '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gryt-windows-zh-${{ inputs.tag }}
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
+            release/slim.yml
+          retention-days: 30

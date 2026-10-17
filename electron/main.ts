@@ -1110,8 +1110,10 @@ function isReleaseNotReadyYet(err: Error): boolean {
   );
 }
 
-const UPDATE_OWNER = "Gryt-chat";
-const UPDATE_REPO = "gryt";
+// 中文版把更新源指向自己的仓库：否则「检查更新」会把官方英文包装回来，中文界面被覆盖。
+// 这里没有发行版，检查更新只会得到「已是最新」；以后中文版要发版，就发到下面这个仓库。
+const UPDATE_OWNER = "bracy686";
+const UPDATE_REPO = "gryt-client";
 
 type GhAsset = {
   name: string;
