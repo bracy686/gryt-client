@@ -1,3 +1,6 @@
+> **中文适配分支 `zh-cn`**：本 fork 的 `main` 与 [官方上游](https://github.com/Gryt-chat/client) 保持一致，汉化开发和 Windows 中文出包都在 `zh-cn`。
+> 分支分工、同步上游和中文构建见 [中文维护说明](zh/README.md)。
+
 <div align="center">
   <img src="https://raw.githubusercontent.com/Gryt-chat/client/main/public/logo.svg" width="80" alt="Gryt logo" />
   <h1>Gryt Client</h1>

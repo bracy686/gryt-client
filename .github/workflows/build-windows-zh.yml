@@ -23,6 +23,7 @@ permissions:
 
 jobs:
   windows:
+    if: github.ref == 'refs/heads/zh-cn'
     # 上游特意锁在 windows-2022，注释说明别随便换成 windows-latest（node-gyp 探针会变）。
     runs-on: windows-2022
     timeout-minutes: 90

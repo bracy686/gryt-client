@@ -1,5 +1,33 @@
 # 中文汉化（zh/）
 
+## 分支与远端
+
+| 名称 | 用途 |
+| --- | --- |
+| `upstream` | 官方仓库 `https://github.com/Gryt-chat/client.git` |
+| `origin` | 中文 fork `https://github.com/bracy686/gryt-client.git` |
+| `main` | 上游镜像，与 `upstream/main` 保持相同提交，只做快进同步 |
+| `zh-cn` | 汉化适配、文档和中文打包工作流的维护分支，也是本 fork 的默认分支 |
+
+所有本地定制都提交到 `zh-cn`；不要将 `zh-cn` 合并回 `main`，也不要在 `main` 添加本 fork 的文档或工作流。
+本地 `main` 跟踪 `upstream/main`，`zh-cn` 跟踪 `origin/zh-cn`，推送目标为 `origin`。
+
+默认分支设为 `zh-cn`，是为了让只存在于该分支的中文工作流保持可手动触发；GitHub 要求 `workflow_dispatch` 工作流存在于默认分支。
+中文 Windows 工作流也限制为只在 `zh-cn` 运行。参见 [GitHub 手动触发说明](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)。
+
+新克隆仓库后配置官方远端（已有 `upstream` 时先核对 URL，无需重复添加）：
+
+```bash
+git remote add upstream https://github.com/Gryt-chat/client.git
+git fetch upstream
+git branch --track main upstream/main
+git config remote.pushDefault origin
+```
+
+默认克隆会检出 `zh-cn`；若本地已有 `main`，用 `git branch --set-upstream-to=upstream/main main` 替代创建分支的那一行。
+
+## 汉化集成点
+
 汉化逻辑、字典和检查都集中在这个目录，上游集成点有：
 
 1. `vite.config.ts` —— 引入本插件：`import { zhCN } from "./zh/plugin.mjs"`，然后在 `plugins` 和四个 electron 子构建里各加一行 `zhCN()`。
@@ -56,14 +84,29 @@ node zh/browser-smoke.mjs      # 先构建中文版并安装 Playwright Chromium
 
 ## 上游更新后怎么跟进
 
-```
-git fetch origin && git merge origin/main      # 或 rebase
+先确认工作区干净。先快进镜像分支，再将官方更新合并到汉化分支；`origin` 是 fork，获取官方更新必须使用 `upstream`。
+
+```bash
+git fetch upstream
+git switch main
+git merge --ff-only upstream/main
+git push origin main
+
+git switch zh-cn
+git pull --ff-only origin zh-cn
+git merge upstream/main
 npx yarn@1.22.22 install --frozen-lockfile --ignore-engines
 node zh/extract.mjs
 node zh/check.mjs --stale                      # 上游改过的文案 → 字典里的旧键失效，照着改
 node zh/check.mjs --top 40                     # 新加的文案 → 补进 dict.zh.json
-ELECTRON=1 npx vite build
+node zh/check.mjs --require-ui --min-coverage 98
+node --test zh/rewrite.test.mjs
+node zh/selftest.mjs
+npx cross-env GRYT_ZH=1 ELECTRON=1 vite build
 ```
+
+处理合并冲突、补齐译文并通过检查后，将适配改动提交到 `zh-cn`，再执行 `git push origin zh-cn`。
+若 `main` 的快进同步失败，先检查分支是否混入定制提交；不要通过合并汉化分支或直接强推来掩盖差异。
 
 字典是 `zh/dict.zh.json`，扁平结构，例如 `{"Cancel": "取消", "Gryt": null}`。候选键由扫描器折叠空白、解码部分 HTML 实体后生成，应从抽取清单复制。`check` 的候选完成率排除明确标为 `null` 的条目，仅反映扫描器识别的文案；它不代表整个界面的翻译率。
 
