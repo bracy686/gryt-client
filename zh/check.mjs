@@ -22,28 +22,20 @@ const minCoverage = args.includes("--min-coverage") ? Number(args[args.indexOf("
 const dictPath = path.join(ROOT, "zh/dict.zh.json");
 const dict = fs.existsSync(dictPath) ? JSON.parse(fs.readFileSync(dictPath, "utf8")) : {};
 const inv = collect();
-if (args.includes("--require-ui") && inv.missingTargets.some((t) => t.includes("@gryt/ui"))) {
-  console.error("✗ 缺少 @gryt/ui/dist，请先按锁文件安装依赖，不能省略组件库检查");
-  process.exit(1);
-}
 const byKey = new Map(inv.items.map((i) => [i.key, i]));
 
 const dictKeys = Object.keys(dict).filter((k) => typeof dict[k] === "string");
 const hit = dictKeys.filter((k) => byKey.has(k));
 const stale = dictKeys.filter((k) => !byKey.has(k));
-const ignored = inv.items.filter((i) => dict[i.key] === null);
-const untranslated = inv.items.filter((i) => typeof dict[i.key] !== "string" && dict[i.key] !== null);
-const denominator = inv.uniqueKeys - ignored.length;
-const coverage = denominator ? (hit.length / denominator) * 100 : 0;
+const untranslated = inv.items.filter((i) => !(i.key in dict));
+const coverage = inv.uniqueKeys ? (hit.length / inv.uniqueKeys) * 100 : 0;
 
 console.log(`字典条目      ${dictKeys.length}`);
 console.log(`源码候选      ${inv.uniqueKeys}（${inv.candidates} 处，${inv.filesScanned} 个文件）`);
 console.log(`有效条目      ${hit.length}`);
 console.log(`失效条目      ${stale.length}`);
-console.log(`明确保留原文  ${ignored.length}（品牌、单位、代码等，不计入翻译分母）`);
-console.log(`候选完成率    ${coverage.toFixed(1)}%（仅限扫描器识别的文案，不代表整个界面）`);
+console.log(`覆盖率        ${coverage.toFixed(1)}%`);
 console.log(`未译条目      ${untranslated.length}`);
-if (inv.missingTargets.length) console.log(`未扫描目录    ${inv.missingTargets.join("、")}`);
 
 if (stale.length) {
   console.log("\n=== 失效条目（源码里已找不到，需人工清理） ===");

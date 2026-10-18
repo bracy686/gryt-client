@@ -139,11 +139,11 @@ export function ChatSealedVideo({
     start();
   }, [start]);
 
-  // Use the player's keyboard control so translated button labels cannot break playback.
+  // Once decrypted, press the player's own play button, so it starts the way a click would start it.
   useLayoutEffect(() => {
     const root = box.current?.querySelector<HTMLElement>(".gryt-video-player");
     if (!src || !root) return;
-    root.dispatchEvent(new KeyboardEvent("keydown", { key: "k", bubbles: true, cancelable: true }));
+    root.querySelector<HTMLButtonElement>('button[aria-label="Play video"]')?.click();
     if (focused.current) root.focus();
   }, [src]);
 

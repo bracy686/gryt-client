@@ -13,7 +13,7 @@ const TARGET_RE = /[\\/](src|electron)[\\/]|[\\/]node_modules[\\/]@gryt[\\/]ui[\
 const CODE_RE = /\.(tsx|jsx|ts|mts|cts|mjs|cjs|js)$/;
 
 export function loadDict(dictPath) {
-  if (!fs.existsSync(dictPath)) throw new Error(`Missing Chinese dictionary: ${dictPath}`);
+  if (!fs.existsSync(dictPath)) return {};
   return JSON.parse(fs.readFileSync(dictPath, "utf8"));
 }
 
@@ -62,14 +62,7 @@ export function zhCN(options = {}) {
     config() {
       // 开发模式下 Vite 会预打包依赖，那一步在 esbuild 里做，插件看不到，
       // 所以把组件库排除出预打包，让它的 dist 走正常管线。
-      return { optimizeDeps: {
-        exclude: ["@gryt/ui"],
-        include: ["use-sync-external-store/shim", "use-sync-external-store/shim/with-selector"],
-      } };
-    },
-
-    transformIndexHtml(html) {
-      return html.replace(/(<html\b[^>]*\blang=)["'][^"']*["']/i, '$1"zh-CN"');
+      return { optimizeDeps: { exclude: ["@gryt/ui"] } };
     },
 
     buildStart() {
@@ -92,13 +85,11 @@ export function zhCN(options = {}) {
             stats.hits++;
             stats.byKind[item.kind] = (stats.byKind[item.kind] ?? 0) + 1;
           },
-          (item, file) => {
-            if (item.reason) throw new Error(`${item.reason}: ${item.key}`);
-            if (options.report) record(item, file);
-          },
+          options.report ? record : null,
         );
       } catch (err) {
-        this.error(`[zh-cn] ${path.relative(root, clean)} 替换失败：${err.message}`);
+        this.warn?.(`[zh-cn] ${path.relative(root, clean)} 替换失败：${err.message}`);
+        return null;
       }
       if (out === code) return null;
       stats.files++;

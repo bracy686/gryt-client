@@ -62,7 +62,7 @@ Gryt 是一个开源桌面聊天/语音软件（Electron + React），界面风�
 
 ## 硬规则
 
-1. **占位符必须原样保留**：`{0}`、`{1}`、`{2}`… 数量不许改，中文语序需要时可调换位置。英文复数或语法词若来自插值，应在 `template-rules.mjs` 为该句的该插值添加结果分支译文。`{{name}}`、`%s`、`${x}` 之类同理。
+1. **占位符必须原样保留**：`{0}`、`{1}`、`{2}`… 数量与顺序都不许改（中文语序需要时可调换位置，但不能增删）。`{{name}}`、`%s`、`${x}` 之类同理。
 2. **不译**：Gryt、Gryt Chat、Windows、macOS、Linux、Android、iOS、Discord、Steam、Webhook、API、Token、OAuth、SSO、Keycloak、RNNoise、DXGI、FPS、GPU、CPU、RAM、IP、URL、QR、ID、JSON、HTTP(S)、WebSocket、TLS、E2EE、Base64、UUID、Markdown、Emoji（作为格式名时）。
 3. **品牌与专有名词**保持原样，包括人名（Sivert）、地名（Norway → 挪威 可译）。
 4. **人称用「你」**，不用「您」。

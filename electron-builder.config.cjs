@@ -37,10 +37,6 @@ const config = yaml.load(
   fs.readFileSync(path.join(__dirname, "electron-builder.yml"), "utf8"),
 );
 
-if (/^(1|true|yes|on)$/i.test(process.env.GRYT_ZH ?? "")) {
-  config.electronLanguages = [...new Set([...config.electronLanguages, "zh-CN"])];
-}
-
 if (SLIM) {
   config.extraResources = config.extraResources.filter(
     (entry) => !String(entry.from).startsWith(EMBEDDED_RESOURCE_PREFIX),
