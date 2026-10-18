@@ -11,6 +11,6 @@ export interface ZhCNOptions {
   report?: boolean;
 }
 
-export declare function loadDict(dictPath: string): Record<string, string>;
+export declare function loadDict(dictPath: string): Record<string, string | null>;
 export declare function zhCN(options?: ZhCNOptions): Plugin;
 export default zhCN;

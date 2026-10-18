@@ -28,7 +28,11 @@ function merge() {
     const part = load(path.join(partsDir, f), {});
     let n = 0;
     for (const [k, v] of Object.entries(part)) {
-      if (v === null || typeof v !== "string" || !v.trim()) continue; // 不译的条目
+      if (v === null) {
+        if (!Object.hasOwn(dict, k)) dict[k] = null;
+        continue;
+      }
+      if (typeof v !== "string" || !v.trim()) throw new Error(`无效译文 ${f}: ${k}`);
       if (dict[k] === v) continue;
       dict[k] = v;
       n += 1;

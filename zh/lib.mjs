@@ -5,6 +5,7 @@
 // 字典没收录的串一律原样显示英文（降级安全）。
 
 import ts from "typescript";
+import { TEMPLATE_RULES } from "./template-rules.mjs";
 
 /** 这些 JSX 属性直接渲染给用户看。 */
 const ATTR_NAMES = new Set([
@@ -21,6 +22,19 @@ const ATTR_NAMES = new Set([
   "emptyText",
   "confirmText",
   "cancelText",
+  "description",
+  "heading",
+  "message",
+  "confirmLabel",
+  "cancelLabel",
+  "submitLabel",
+  "pendingLabel",
+  "secondaryLabel",
+  "copyLabel",
+  "hint",
+  "note",
+  "tip",
+  "data-tip",
 ]);
 
 /** 这些对象属性名在 React/组件里就是文案位。保守取值，避免打到接口数据上。 */
@@ -39,6 +53,7 @@ const PROP_NAMES = new Set([
   "cancelText",
   "header",
   "subheader",
+  ...ATTR_NAMES,
 ]);
 
 /** 变量名像文案的，取它的字符串字面量。 */
@@ -48,6 +63,28 @@ const VAR_NAME_RE =
 /** 函数名像弹提示/弹窗的，取第一个字符串参数。 */
 const CALL_NAME_RE =
   /^(toast|showToast|notify|showNotice|alert|confirm|warn|showError|setError|setStatus|setMessage|pushToast|reportError|setNotice|showWarning)$/i;
+
+// Only result positions carry copy. Conditions, object keys and arbitrary call arguments do not.
+function visitValue(node, onLiteral, onTemplate, onJoin) {
+  if (!node) return;
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) onLiteral(node);
+  else if (ts.isTemplateExpression(node)) onTemplate?.(node);
+  else if (ts.isConditionalExpression(node)) {
+    visitValue(node.whenTrue, onLiteral, onTemplate, onJoin);
+    visitValue(node.whenFalse, onLiteral, onTemplate, onJoin);
+  } else if (ts.isBinaryExpression(node)) {
+    if ([ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.PlusToken].includes(node.operatorToken.kind)) {
+      visitValue(node.left, onLiteral, onTemplate, onJoin);
+      visitValue(node.right, onLiteral, onTemplate, onJoin);
+    } else if (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+      visitValue(node.right, onLiteral, onTemplate, onJoin);
+    }
+  } else if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node) || ts.isNonNullExpression(node)) {
+    visitValue(node.expression, onLiteral, onTemplate, onJoin);
+  } else if (onJoin && ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "join") {
+    onJoin(node.arguments[0]);
+  }
+}
 
 export function scriptKindFor(file) {
   if (file.endsWith(".tsx")) return ts.ScriptKind.TSX;
@@ -151,32 +188,38 @@ export function scan(code, file) {
   };
 
   const stringKey = (node) => normalizeText(node.text);
+  const copyValue = (node, kind) => visitValue(node, (lit) =>
+    push(kind, stringKey(lit), lit.getStart(sf), lit.getEnd(), lit.text));
 
-  const visit = (node, inJsxChild) => {
+  const visit = (node) => {
     if (ts.isJsxText(node)) {
       const start = node.getStart(sf);
       const end = node.getEnd();
       push("jsx-text", normalizeText(code.slice(start, end)), start, end, code.slice(start, end));
     } else if (ts.isJsxAttribute(node)) {
       const name = node.name.getText(sf);
-      if (ATTR_NAMES.has(name) && node.initializer) {
+      const componentName = node.parent.parent?.tagName?.getText(sf);
+      if ((ATTR_NAMES.has(name) || (componentName === "EntryCard" && name === "name") ||
+        (componentName === "AppStoreUpdates" && name === "store")) && node.initializer) {
         if (ts.isStringLiteral(node.initializer)) {
-          push("attr:" + name, stringKey(node.initializer), node.initializer.getStart(sf), node.initializer.getEnd(), node.initializer.text);
-        } else if (ts.isJsxExpression(node.initializer) && node.initializer.expression && ts.isStringLiteral(node.initializer.expression)) {
-          const lit = node.initializer.expression;
-          push("attr:" + name, stringKey(lit), lit.getStart(sf), lit.getEnd(), lit.text);
+          push("jsx-attr:" + name, stringKey(node.initializer), node.initializer.getStart(sf), node.initializer.getEnd(), node.initializer.text);
+        } else if (ts.isJsxExpression(node.initializer)) {
+          copyValue(node.initializer.expression, "attr:" + name);
         }
       }
     } else if (ts.isPropertyAssignment(node)) {
       const name = node.name.getText(sf).replace(/^["']|["']$/g, "");
-      if (PROP_NAMES.has(name) && ts.isStringLiteral(node.initializer)) {
-        push("prop:" + name, stringKey(node.initializer), node.initializer.getStart(sf), node.initializer.getEnd(), node.initializer.text);
+      if (PROP_NAMES.has(name)) copyValue(node.initializer, "prop:" + name);
+      const dialog = node.parent?.parent;
+      if (ts.isCallExpression(dialog) && /(?:^|\.)showMessageBox(?:Sync)?$/.test(dialog.expression.getText(sf))) {
+        if (name === "detail" || name === "message") copyValue(node.initializer, "dialog:" + name);
+        if (name === "buttons" && ts.isArrayLiteralExpression(node.initializer)) {
+          node.initializer.elements.forEach((el) => copyValue(el, "dialog:button"));
+        }
       }
-    } else if (ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node)) {
+    } else if (ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node) || ts.isBindingElement(node) || ts.isParameter(node)) {
       const name = node.name.getText(sf);
-      if (node.initializer && ts.isStringLiteral(node.initializer) && VAR_NAME_RE.test(name)) {
-        push("var:" + name, stringKey(node.initializer), node.initializer.getStart(sf), node.initializer.getEnd(), node.initializer.text);
-      }
+      if (node.initializer && VAR_NAME_RE.test(name)) copyValue(node.initializer, "var:" + name);
     } else if (ts.isCallExpression(node)) {
       const callee = ts.isIdentifier(node.expression) ? node.expression.text : ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : "";
       // 日志调用里的字符串不是界面文案，整棵子树跳过。
@@ -184,31 +227,22 @@ export function scan(code, file) {
         ? /^(console|logger|log)$/i.test(node.expression.expression.getText(sf)) && /^(log|warn|error|info|debug|trace)$/i.test(node.expression.name.text)
         : /^(log|warn|error|info|debug|trace)$/i.test(callee);
       if (isLog) return;
-      if (CALL_NAME_RE.test(callee)) {
-        const arg = node.arguments[0];
-        if (arg && ts.isStringLiteral(arg)) {
-          push("call:" + callee, stringKey(arg), arg.getStart(sf), arg.getEnd(), arg.text);
-        }
+      const toastMethod = ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.expression.getText(sf) === "toast" && /^(success|error|loading|custom)$/.test(callee);
+      if (CALL_NAME_RE.test(callee) || toastMethod) copyValue(node.arguments[0], "call:" + callee);
+      if (/^(showErrorBox)$/.test(callee)) {
+        node.arguments.slice(0, 2).forEach((arg) => copyValue(arg, "dialog:" + callee));
       }
     } else if (ts.isTemplateExpression(node)) {
       const key = templateKeyOf(node, sf);
       push("template", key, node.getStart(sf), node.getEnd(), node.getText(sf));
-    } else if (ts.isStringLiteral(node) && inJsxChild) {
-      push("jsx-expr", stringKey(node), node.getStart(sf), node.getEnd(), node.text);
+    } else if (ts.isJsxExpression(node) && (ts.isJsxElement(node.parent) || ts.isJsxFragment(node.parent))) {
+      copyValue(node.expression, "jsx-expr");
     }
-
-    const childFlagFor = (child) => {
-      // 元素/片段的子节点：只有表达式容器 {…} 才是「JSX 子位置」
-      if (ts.isJsxElement(node) || ts.isJsxFragment(node)) return ts.isJsxExpression(child);
-      // 开标签里的属性区、以及属性值本身，都不是子位置
-      if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node) || ts.isJsxAttribute(node)) return false;
-      // 表达式内部沿用外层判断
-      return inJsxChild;
-    };
-    ts.forEachChild(node, (child) => visit(child, childFlagFor(child)));
+    ts.forEachChild(node, visit);
   };
 
-  visit(sf, false);
+  visit(sf);
 
   // 同一个区间可能被多条规则命中，保留第一个（越靠前的规则越精确）。
   const seen = new Set();
@@ -249,7 +283,21 @@ export function rewrite(code, file, dict, onHit, onMiss) {
       const node = findTemplateAt(sf, item.start);
       if (!node) continue;
       // 表达式内部（如三元里的另一个模板串）先各自过一遍同样的替换。
-      const exprSources = node.templateSpans.map((span) => rewrite(span.expression.getText(sf), file, dict, onHit, onMiss));
+      const exprSources = node.templateSpans.map((span, i) => {
+        const expression = span.expression;
+        const start = expression.getStart(sf);
+        let source = expression.getText(sf);
+        const edits = [];
+        const rules = TEMPLATE_RULES[item.key]?.[i] ?? {};
+        const translate = (lit, explicitOnly = false) => {
+          if (!lit || !(ts.isStringLiteral(lit) || ts.isNoSubstitutionTemplateLiteral(lit))) return;
+          const text = Object.hasOwn(rules, lit.text) ? rules[lit.text] : explicitOnly ? undefined : dict[normalizeText(lit.text)];
+          if (typeof text === "string") edits.push({ start: lit.getStart(sf) - start, end: lit.getEnd() - start, text: JSON.stringify(text) });
+        };
+        visitValue(expression, translate, null, (lit) => translate(lit, true));
+        for (const edit of edits.sort((a, b) => b.start - a.start)) source = source.slice(0, edit.start) + edit.text + source.slice(edit.end);
+        return rewrite(source, file, dict, onHit, onMiss);
+      });
       const rebuilt = rebuildTemplate(zh, exprSources);
       if (!rebuilt) {
         if (onMiss) onMiss({ ...item, key: item.key, reason: "placeholder-mismatch" }, file);
@@ -260,11 +308,11 @@ export function rewrite(code, file, dict, onHit, onMiss) {
       continue;
     }
     if (item.kind === "jsx-text") {
-      if (/[{}<>]/.test(zh)) {
-        if (onMiss) onMiss({ ...item, reason: "unsafe-chars" }, file);
-        continue;
-      }
-      edits.push({ start: item.start, end: item.end, text: zh });
+      const leading = item.raw.match(/^\s*/)[0];
+      const trailing = item.raw.match(/\s*$/)[0];
+      edits.push({ start: item.start, end: item.end, text: leading + escapeJsx(zh) + trailing });
+    } else if (item.kind.startsWith("jsx-attr:")) {
+      edits.push({ start: item.start, end: item.end, text: '"' + escapeJsx(zh).replace(/"/g, "&quot;").replace(/\n/g, "&#10;") + '"' });
     } else {
       edits.push({ start: item.start, end: item.end, text: JSON.stringify(zh) });
     }
@@ -300,23 +348,25 @@ function findTemplateAt(sf, start) {
 
 /** 把「已经含有 {0} 的中文」和原表达式拼回一个模板字符串。 */
 export function rebuildTemplate(zh, exprSources) {
-  const parts = [];
-  let rest = zh;
-  for (let i = 0; i < exprSources.length; i++) {
-    const marker = `{${i}}`;
-    const at = rest.indexOf(marker);
-    if (at < 0) return null;
-    parts.push(rest.slice(0, at));
-    parts.push(`\u0000${i}\u0000`);
-    rest = rest.slice(at + marker.length);
-  }
-  parts.push(rest);
-  const joined = parts.join("");
-  if (!joined.includes("\u0000")) return null;
+  const markers = [...zh.matchAll(/\{(\d+)\}/g)];
+  const order = markers.map((m) => Number(m[1]));
+  if (!exprSources.length || order.length !== exprSources.length || new Set(order).size !== exprSources.length ||
+    order.some((i) => i >= exprSources.length) || markers.some((m) => m[0] !== `{${Number(m[1])}}`)) return null;
+  const reordered = order.some((n, i) => n !== i);
   const escaped = (s) => s.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
-  const body = joined
-    .split(/\u0000(\d+)\u0000/)
-    .map((chunk, i) => (i % 2 === 1 ? `\${${exprSources[Number(chunk)]}}` : escaped(chunk)))
-    .join("");
-  return "`" + body + "`";
+  let cursor = 0;
+  let body = "";
+  for (const marker of markers) {
+    body += escaped(zh.slice(cursor, marker.index)) + "${" + (reordered ? `__grytZh${marker[1]}` : exprSources[Number(marker[1])]) + "}";
+    cursor = marker.index + marker[0].length;
+  }
+  const template = "`" + body + escaped(zh.slice(cursor)) + "`";
+  if (!reordered) return template;
+  // Coerce each argument before evaluating the next, exactly like the original template.
+  const params = exprSources.map((_, i) => `__grytZh${i}`).join(", ");
+  return `((${params}) => ${template})(${exprSources.map((expr) => "`${" + expr + "}`").join(", ")})`;
+}
+
+function escapeJsx(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\{/g, "&#123;").replace(/\}/g, "&#125;");
 }

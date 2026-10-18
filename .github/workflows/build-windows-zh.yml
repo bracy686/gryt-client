@@ -62,13 +62,20 @@ jobs:
         run: yarn helper:build
 
       - name: 汉化体检（覆盖率、失效条目）
-        run: node zh/check.mjs --min-coverage 85
+        run: node zh/check.mjs --require-ui --min-coverage 98
 
       - name: 改写安全体检（只动文案，不动结构）
-        run: node zh/selftest.mjs
+        run: |
+          node --test zh/rewrite.test.mjs
+          node zh/selftest.mjs
 
       - name: 构建前端与主进程
         run: npx cross-env ELECTRON=1 vite build
+
+      - name: 中文界面与播放器交互检查
+        run: |
+          npx playwright install chromium
+          node zh/browser-smoke.mjs
 
       - name: 打包（NSIS 安装包 + 便携版）
         shell: bash

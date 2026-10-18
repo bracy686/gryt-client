@@ -54,8 +54,10 @@ export function collect(targetList = targets) {
   const byKey = new Map();
   let filesScanned = 0;
   let candidates = 0;
+  const missingTargets = [];
 
   for (const target of targetList) {
+    if (!fs.existsSync(path.join(ROOT, target.dir))) missingTargets.push(target.dir);
     for (const file of walk(path.join(ROOT, target.dir), target.exts)) {
       const rel = path.relative(ROOT, file);
       let code;
@@ -87,7 +89,7 @@ export function collect(targetList = targets) {
     .map((e) => ({ key: e.key, kinds: [...e.kinds].sort(), count: e.count, where: e.where }))
     .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
 
-  return { filesScanned, candidates, uniqueKeys: items.length, items };
+  return { filesScanned, candidates, uniqueKeys: items.length, items, missingTargets };
 }
 
 const dict = loadDict();
@@ -96,7 +98,8 @@ const dict = loadDict();
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === import.meta.filename;
 if (isMain) {
   const { filesScanned, candidates, items } = collect();
-  const untranslated = items.filter((i) => typeof dict[i.key] !== "string");
+  const untranslated = items.filter((i) => typeof dict[i.key] !== "string" && dict[i.key] !== null);
+  const ignored = items.filter((i) => dict[i.key] === null).length;
 
   fs.writeFileSync(
     path.join(ZH, "inventory.json"),
@@ -106,7 +109,8 @@ if (isMain) {
         filesScanned,
         candidates,
         uniqueKeys: items.length,
-        translated: items.length - untranslated.length,
+        translated: items.length - untranslated.length - ignored,
+        ignored,
         items,
       },
       null,
@@ -116,6 +120,6 @@ if (isMain) {
   fs.writeFileSync(path.join(ZH, "untranslated.json"), JSON.stringify({ generatedAt: new Date().toISOString(), items: untranslated }, null, 2) + "\n");
 
   console.log(`文件 ${filesScanned} 个，候选 ${candidates} 处，去重 ${items.length} 条`);
-  console.log(`已译 ${items.length - untranslated.length} 条，待译 ${untranslated.length} 条`);
+  console.log(`已译 ${items.length - untranslated.length - ignored} 条，明确保留原文 ${ignored} 条，待译 ${untranslated.length} 条`);
   console.log(`产物：zh/inventory.json、zh/untranslated.json`);
 }
