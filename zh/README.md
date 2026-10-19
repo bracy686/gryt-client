@@ -34,6 +34,7 @@ git config remote.pushDefault origin
 2. `electron/main.ts:1113` —— 更新源从 `Gryt-chat/gryt` 改成本仓库。否则「检查更新」会把官方英文包装回来，中文界面被覆盖。
 3. `electron-builder.config.cjs` —— 中文包额外保留 Chromium 的 `zh-CN` 语言资源。
 4. `ChatMediaPlayer.tsx` —— 解密视频后使用播放器的键盘控制启动播放，不依赖可翻译的英文按钮名。
+5. `electron/windowState.ts` 与“外观 → 显示”的启动窗口设置 —— 默认关闭窗口记忆，自动尺寸以 1200 × 800 逻辑像素为基准，宽高分别不超过屏幕可用区域的 80%；可改为自定义尺寸。尺寸设置下次启动生效，拖动窗口不覆盖自定义值。开启记忆后保存普通窗口大小、位置及最大化状态，首次无记录时自动适配；关闭时清除历史状态。配置存于本机 `userData/gryt-config.json` 的 `startupWindow` 和 `windowState`，通过专用 IPC 访问。恢复和显示器变更时校正位置，隐藏自启动不提前显示窗口，从托盘恢复不重新套用启动尺寸。
 
 ## 开关：GRYT_ZH
 
@@ -80,6 +81,9 @@ GRYT_ZH=1 ELECTRON=1 npx vite build   # 中文构建（不设 GRYT_ZH 就是英�
 node zh/selftest.mjs           # 改写安全体检：只许文案变，结构与语法必须不变
 node --test zh/rewrite.test.mjs # 单复数、换序求值、代码保护、语言配置等回归测试
 node zh/browser-smoke.mjs      # 先构建中文版并安装 Playwright Chromium；检查实际页面和播放交互
+node --test scripts/check-window-state.mjs # 启动尺寸、缩放、记忆、重启及显示器变化
+node scripts/check-window-state-electron.mjs # 中文桌面构建后：隔离临时目录实测窗口和 preload IPC
+node zh/window-settings-smoke.mjs         # 中文显示页：桌面控件交互、保存、校验与浏览器隐藏
 ```
 
 ## 上游更新后怎么跟进

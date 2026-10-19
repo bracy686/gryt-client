@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame } from "electron";
 
+import type { StartupWindowSettings, WindowSize } from "../src/lib/windowSettings";
+
 type EmbeddedServerConfigShape = {
   id: string;
   serverName: string;
@@ -239,6 +241,18 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   setCloseToTray(enabled: boolean) {
     ipcRenderer.send("set-close-to-tray", enabled);
+  },
+
+  getStartupWindowSettings(): Promise<StartupWindowSettings> {
+    return ipcRenderer.invoke("window:get-settings");
+  },
+
+  setStartupWindowSettings(settings: StartupWindowSettings): Promise<StartupWindowSettings> {
+    return ipcRenderer.invoke("window:set-settings", settings);
+  },
+
+  getCurrentWindowSize(): Promise<WindowSize> {
+    return ipcRenderer.invoke("window:get-current-size");
   },
 
   setSignedIn(signedIn: boolean) {

@@ -70,13 +70,20 @@ jobs:
           node --test zh/rewrite.test.mjs
           node zh/selftest.mjs
 
+      - name: 启动窗口配置检查
+        run: node --test scripts/check-window-state.mjs
+
       - name: 构建前端与主进程
         run: npx cross-env ELECTRON=1 vite build
+
+      - name: 启动窗口桌面实测
+        run: node scripts/check-window-state-electron.mjs
 
       - name: 中文界面与播放器交互检查
         run: |
           npx playwright install chromium
           node zh/browser-smoke.mjs
+          node zh/window-settings-smoke.mjs
 
       - name: 打包（NSIS 安装包 + 便携版）
         shell: bash

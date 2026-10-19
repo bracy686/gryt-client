@@ -3,6 +3,7 @@ import { Slider } from "@gryt/ui";
 import { useTheme } from "@/common";
 
 import { SettingsContainer } from "../settingsComponents";
+import { StartupWindowSettingsPanel } from "./startupWindowSettings";
 
 /**
  * How big everything is drawn. Split out of the theme panel, which had grown to
@@ -22,6 +23,8 @@ export function DisplaySettings() {
   return (
     <SettingsContainer>
       <h2 className="text-lg">Display</h2>
+
+      <StartupWindowSettingsPanel />
 
       <div className="flex flex-col gap-2" id="ui-scale" data-setting="ui-scale">
         <div className="flex justify-between items-center">

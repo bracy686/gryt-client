@@ -165,6 +165,7 @@ import {
   patchUser,
   saveUser,
 } from "./userStore";
+import { createWindowStateManager } from "./windowState";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -817,7 +818,7 @@ function handleDeepLink(url: string): void {
       mainWindow.webContents.send("auth-callback", url);
     }
 
-    if (!mainWindow.isVisible()) mainWindow.show();
+    if (!mainWindow.isVisible()) windowStateManager.show(mainWindow);
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
   } else {
@@ -845,6 +846,13 @@ function writeConfig(patch: Record<string, unknown>) {
   const config = { ...readConfig(), ...patch };
   writeFileSync(configPath, JSON.stringify(config, null, 2));
 }
+
+const windowStateManager = createWindowStateManager({
+  screen,
+  readConfig,
+  writeConfig,
+  onError: (error) => startupLog(`Window state could not be saved: ${String(error)}`),
+});
 
 function readBoolConfig(key: string, defaultValue: boolean): boolean {
   const v = readConfig()[key];
@@ -1076,7 +1084,7 @@ let installerWaitsForWindow =
 function showMain(): void {
   if (!mainWindow) return;
 
-  mainWindow.show();
+  windowStateManager.show(mainWindow);
   mainWindow.focus();
 
   if (installerWaitsForWindow) {
@@ -2152,11 +2160,11 @@ function drawsWindowButtons(): boolean {
 }
 
 function createMainWindow(): BrowserWindow {
+  const startup = windowStateManager.startupState();
   mainWindow = new BrowserWindow({
-    width: 1600,
-    height: 900,
-    minWidth: 300,
-    minHeight: 300,
+    ...startup.bounds,
+    minWidth: Math.min(300, startup.bounds.width),
+    minHeight: Math.min(300, startup.bounds.height),
     show: false,
 
     titleBarStyle: "hidden",
@@ -2196,6 +2204,8 @@ function createMainWindow(): BrowserWindow {
     autoHideMenuBar: true,
     title: "Gryt",
   });
+
+  windowStateManager.attach(mainWindow, startup);
 
   mainWindow.loadURL(
     localServerUrl ??
@@ -2777,7 +2787,7 @@ function toggleMainWindow(): void {
   ) {
     mainWindow.hide();
   } else {
-    mainWindow.show();
+    windowStateManager.show(mainWindow);
     mainWindow.focus();
   }
 }
@@ -3009,7 +3019,7 @@ if (!gotSingleInstanceLock) {
         if (
           !mainWindow.isVisible()
         ) {
-          mainWindow.show();
+          windowStateManager.show(mainWindow);
         }
 
         if (
@@ -3313,6 +3323,10 @@ if (!gotSingleInstanceLock) {
           });
         }
       );
+
+      ipcMain.handle("window:get-settings", () => windowStateManager.getSettings());
+      ipcMain.handle("window:set-settings", (_event, value: unknown) => windowStateManager.setSettings(value));
+      ipcMain.handle("window:get-current-size", () => windowStateManager.getCurrentSize());
 
       /** The OS draws these, so the stylesheet cannot reach them. Resolved
           colours, since only the renderer reads the variables. Not macOS. */
@@ -4033,7 +4047,7 @@ if (!gotSingleInstanceLock) {
           "Dev mode — skipping the update check"
         );
 
-        mainWindow?.show();
+        if (mainWindow) windowStateManager.show(mainWindow);
       } else if (startHiddenOnLaunch) {
         startupLog(
           "Starting hidden (auto-start)"
@@ -4592,7 +4606,7 @@ if (!gotSingleInstanceLock) {
 
           notification.on("click", () => {
             if (!mainWindow) return;
-            if (!mainWindow.isVisible()) mainWindow.show();
+            if (!mainWindow.isVisible()) windowStateManager.show(mainWindow);
             if (mainWindow.isMinimized()) mainWindow.restore();
             mainWindow.focus();
 
@@ -4665,7 +4679,7 @@ if (!gotSingleInstanceLock) {
             if (
               !mainWindow.isVisible()
             ) {
-              mainWindow.show();
+              windowStateManager.show(mainWindow);
             }
 
             mainWindow.focus();
@@ -4673,7 +4687,7 @@ if (!gotSingleInstanceLock) {
             const createdWindow =
               createMainWindow();
 
-            createdWindow.show();
+            windowStateManager.show(createdWindow);
           }
         }
       );
@@ -4724,6 +4738,7 @@ if (!gotSingleInstanceLock) {
     "before-quit",
     () => {
       isQuitting = true;
+      windowStateManager.flush();
     }
   );
 

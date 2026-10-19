@@ -3,6 +3,7 @@ import { AddonManifest, AddonUpdate } from "@/addons";
 import type { HotkeyAction, HotkeyBindings } from "./hotkeys";
 import type { RichActivity } from "./richActivity";
 import type { ScreenAudioProblem } from "./screenShareAudio";
+import type { StartupWindowSettings, WindowSize } from "./windowSettings";
 
 /** One thing a screen share is taking audio from. */
 export interface AudioCaptureSource {
@@ -278,6 +279,9 @@ export interface ElectronAPI {
 
   getCloseToTray(): Promise<boolean>;
   setCloseToTray(enabled: boolean): void;
+  getStartupWindowSettings?(): Promise<StartupWindowSettings>;
+  setStartupWindowSettings?(settings: StartupWindowSettings): Promise<StartupWindowSettings>;
+  getCurrentWindowSize?(): Promise<WindowSize>;
   setSignedIn(signedIn: boolean): void;
   /**
    * Tell the tray what voice is doing. The main process has no other route: mute

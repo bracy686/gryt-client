@@ -11,10 +11,10 @@
     "allowSyntheticDefaultImports": true,
     "strict": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "types": ["node"]
   },
-  // The hotkey grammar is shared with the renderer, which is why one src
-  // file is listed here. Both projects are noEmit, so compiling it twice costs
-  // nothing and keeps the main process from re-implementing the parsing.
-  "include": ["vite.config.ts", "electron/**/*.ts", "src/lib/hotkeys.ts"]
+  // The hotkey grammar and desktop window preferences are shared with the renderer.
+  // Both projects are noEmit, so checking them twice keeps both sides in agreement.
+  "include": ["vite.config.ts", "electron/**/*.ts", "src/lib/hotkeys.ts", "src/lib/windowSettings.ts"]
 }
