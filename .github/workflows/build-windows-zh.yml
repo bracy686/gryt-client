@@ -128,4 +128,5 @@ jobs:
             release/latest.yml
             release/slim.yml
             release/build-info.json
+            release/windows-package-config.json
           retention-days: 30

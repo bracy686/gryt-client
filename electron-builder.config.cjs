@@ -127,6 +127,18 @@ config.afterPack = async (context) => {
   if (removed.length > 0) {
     console.log(`  • pruned prebuilds  kept=${kept.join(", ")} removed=${removed.join(", ")}`);
   }
+  if (context.electronPlatformName === "win32" && /^(1|true|yes|on)$/i.test(process.env.GRYT_ZH ?? "")) {
+    // electron-builder omits its debug config on CI. Record the actual resolved options.
+    const nsis = context.packager.config.nsis;
+    fs.writeFileSync(path.join(path.dirname(context.appOutDir), "windows-package-config.json"), JSON.stringify({
+      nsis: {
+        oneClick: nsis.oneClick,
+        allowToChangeInstallationDirectory: nsis.allowToChangeInstallationDirectory,
+        include: nsis.include,
+        installerLanguages: nsis.installerLanguages,
+      },
+    }, null, 2));
+  }
 };
 
 module.exports = config;

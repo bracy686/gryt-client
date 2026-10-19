@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 
 import { cleanupWindowsMigrationBackup } from "../electron/windowsInstallMigration.ts";
@@ -48,6 +48,32 @@ test("opening/cancelling the wizard cannot move files, stop processes or write r
   assert.doesNotMatch(init, /\b(?:Rename|DeleteReg\w*|WriteReg\w*|RMDir|Exec\w*|FileOpen)\b/);
   assert.match(script, /!define APP_FILENAME "gryt-chat"/);
   assert.match(script, /StrCpy \$isForceCurrentInstall "1"/);
+});
+
+test("afterPack records the resolved options even without electron-builder's CI debug file", async () => {
+  const root = mkdtempSync(join(tmpdir(), "gryt-package-config-"));
+  const previous = process.env.GRYT_ZH;
+  try {
+    process.env.GRYT_ZH = "1";
+    delete require.cache[configFile];
+    const config = require(configFile);
+    const appOutDir = join(root, "win-unpacked");
+    mkdirSync(appOutDir);
+    const nsis = { ...config.nsis, oneClick: true };
+    await config.afterPack({ appOutDir, electronPlatformName: "win32", arch: require("builder-util").Arch.x64,
+      packager: { config: { nsis } } });
+    const recorded = JSON.parse(readFileSync(join(root, "windows-package-config.json"), "utf8"));
+    assert.equal(recorded.nsis.oneClick, true, "snapshot must use the resolved packager options");
+    assert.equal(recorded.nsis.allowToChangeInstallationDirectory, true);
+    assert.equal(recorded.nsis.include, "zh/installer.nsh");
+  } finally {
+    if (previous === undefined) delete process.env.GRYT_ZH;
+    else process.env.GRYT_ZH = previous;
+    delete require.cache[configFile];
+    assert.equal(resolve(dirname(root)), resolve(tmpdir()));
+    assert.ok(root.startsWith(join(tmpdir(), "gryt-package-config-")));
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 function fixture(t) {

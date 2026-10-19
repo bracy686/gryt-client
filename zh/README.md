@@ -134,7 +134,7 @@ gh run download <run-id> --repo bracy686/gryt-client
 
 ### Windows 中文安装向导
 
-云端打包后读取本次 `builder-effective-config.yaml`，核验中文向导、安装目录选择及 `zh/installer.nsh` 已实际启用，并检查包内窗口设置功能。验证结果写入 `build-info.json`，与安装包一起归档。
+打包进程通过 `afterPack` 将实际生效的安装器配置保存为 `windows-package-config.json`；云端据此核验中文向导、安装目录选择及 `zh/installer.nsh` 已实际启用，并检查包内窗口设置功能。验证结果写入 `build-info.json`，两份记录与安装包一起归档。
 
 `GRYT_ZH=1` 的 NSIS 安装包使用简体中文向导：欢迎 → 选择目录 → 安装 → 完成，可选择其他磁盘。为兼容现有安装，默认子目录仍为 `gryt-chat`；框架会在不含该名称的所选路径后添加此子目录。当前只支持当前用户安装，拒绝 `/allusers` 和已有的所有用户安装，避免与现有 HKCU 迁移、helper 设置混用。未开启 `GRYT_ZH` 的构建沿用上游一键安装设置。
 

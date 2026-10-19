@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 const require = createRequire(import.meta.url);
 const root = resolve(import.meta.dirname, "..");
 const release = join(root, "release");
-const config = require("js-yaml").load(readFileSync(join(release, "builder-effective-config.yaml"), "utf8"));
+const config = JSON.parse(readFileSync(join(release, "windows-package-config.json"), "utf8"));
 assert.equal(config.nsis.oneClick, false, "Chinese installer must show the wizard");
 assert.equal(config.nsis.allowToChangeInstallationDirectory, true, "Chinese installer must offer a destination directory");
 assert.equal(config.nsis.include, "zh/installer.nsh");
