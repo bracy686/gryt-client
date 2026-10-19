@@ -179,7 +179,7 @@ await check("Linux: an XDG autostart entry with TryExec, and an AppImage's helpe
   const m = machine("linux", { env: { XDG_CONFIG_HOME: "" } });
   await register(m.deps, m.binary);
   const entry = readFileSync(join(m.home, ".config", "autostart", "chat.gryt.helper.desktop"), "utf8");
-  assert.match(entry, new RegExp(`^TryExec=${m.binary}$`, "m"));
+  assert.equal(entry.split("\n").find((line) => line.startsWith("TryExec=")), `TryExec=${m.binary}`);
   assert.match(entry, /^NoDisplay=true$/m);
   await unregister(m.deps);
   assert.deepEqual(m.entries(), []);
@@ -188,7 +188,7 @@ await check("Linux: an XDG autostart entry with TryExec, and an AppImage's helpe
   await register(image.deps, image.binary);
   const copied = join(image.home, ".local", "share", "gryt-helper", "gryt-helper");
   assert.equal(existsSync(copied), true);
-  assert.match(readFileSync(autostartPath(image.deps), "utf8"), new RegExp(`^Exec=${copied}$`, "m"));
+  assert.equal(readFileSync(autostartPath(image.deps), "utf8").split("\n").find((line) => line.startsWith("TryExec=")), `TryExec=${copied}`);
 
   assert.match(autostartEntry("/opt/Gryt Chat/gryt-helper"), /^Exec="\/opt\/Gryt Chat\/gryt-helper"$/m);
 });

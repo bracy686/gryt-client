@@ -10,9 +10,13 @@
 
 !include "LogicLib.nsh"
 
+!ifndef GRYT_MIGRATION_REG_KEY
 !define GRYT_MIGRATION_REG_KEY "Software\Gryt Chat"
+!endif
 !define GRYT_MIGRATION_REG_VALUE "LegacyNsisMigrationV1"
 
+; The Chinese wizard reads state at startup and migrates only after Install is pressed.
+!ifndef GRYT_ZH_INSTALLER
 !macro customInit
   ; Never keep the install directory as NSIS' working directory while we move it.
   SetOutPath "$TEMP"
@@ -77,12 +81,15 @@
 
 grytMigrationDone:
 !macroend
+!endif
 
 
 ; ── Updates (GRYT-1496) ────────────────────────────────────────────────────
 
 ; Gryt's userData folder, and the files electron/updateInProgress.ts writes there.
+!ifndef GRYT_USER_DATA
 !define GRYT_USER_DATA "$APPDATA\${APP_FILENAME}"
+!endif
 !define GRYT_INSTALL_MARKER "update-installing.json"
 !define GRYT_REOPEN_REQUEST "update-reopen"
 
@@ -93,6 +100,11 @@ Var pid
 ; Replaces the banner's "Installing, please wait...", and skips PowerShell unless Gryt won't close.
 ; A cold PowerShell took 5 s on a runner, and the stock check starts three of them.
 !macro customCheckAppRunning
+  !ifmacrodef grytBeforeCheckAppRunning
+    !insertmacro grytBeforeCheckAppRunning
+  !endif
+
+  !ifdef ONE_CLICK
   !ifndef BUILD_UNINSTALLER
     ${IfNot} ${Silent}
     ${AndIf} ${isUpdated}
@@ -101,6 +113,7 @@ Var pid
       GetDlgItem $0 $0 1000
       SendMessage $0 ${WM_SETTEXT} 0 "STR:Updating Gryt Chat. It'll open again by itself when it's done."
     ${EndIf}
+  !endif
   !endif
 
   ; An update comes from a Gryt that is quitting, so give it ten seconds to go on its own.
@@ -120,6 +133,10 @@ Var pid
     !insertmacro IS_POWERSHELL_AVAILABLE
     !insertmacro _CHECK_APP_RUNNING
   ${EndIf}
+
+  !ifmacrodef grytAfterCheckAppRunning
+    !insertmacro grytAfterCheckAppRunning
+  !endif
 !macroend
 
 
@@ -128,6 +145,10 @@ Var pid
 ; Mark this machine as migrated so future versions go through electron-builder's
 ; ordinary upgrade path rather than doing another clean-install migration.
 !macro customInstall
+  !ifmacrodef grytAfterInstall
+    !insertmacro grytAfterInstall
+  !endif
+
   WriteRegDWORD HKCU \
     "${GRYT_MIGRATION_REG_KEY}" \
     "${GRYT_MIGRATION_REG_VALUE}" \
@@ -177,8 +198,16 @@ Var pid
 ; The helper's startup value is only ever written by the app, when somebody turns it on.
 ; An update runs the old uninstaller too, and that must leave the setting alone.
 !macro customUnInstall
+  !ifdef GRYT_ZH_INSTALLER
+    nsExec::Exec 'taskkill /F /IM ${GRYT_HELPER_NAME}'
+    Pop $R0
+    ${IfNot} ${isUpdated}
+      DeleteRegValue HKCU "${GRYT_HELPER_RUN_KEY}" "GrytHelper"
+    ${EndIf}
+  !else
   nsExec::Exec 'taskkill /F /IM gryt-helper.exe'
   ${IfNot} ${isUpdated}
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "GrytHelper"
   ${EndIf}
+  !endif
 !macroend

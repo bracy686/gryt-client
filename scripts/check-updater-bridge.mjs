@@ -74,7 +74,7 @@ for (const language of ["en", "nb"]) {
 const main = readFileSync(
   new URL("../electron/main.ts", import.meta.url),
   "utf8",
-);
+).replace(/\r\n/g, "\n");
 
 assert.doesNotMatch(main, /launchWindowsInstallerAfterExit/);
 

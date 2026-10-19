@@ -32,7 +32,7 @@ git config remote.pushDefault origin
 
 1. `vite.config.ts` —— 引入本插件：`import { zhCN } from "./zh/plugin.mjs"`，然后在 `plugins` 和四个 electron 子构建里各加一行 `zhCN()`。
 2. `electron/main.ts:1113` —— 更新源从 `Gryt-chat/gryt` 改成本仓库。否则「检查更新」会把官方英文包装回来，中文界面被覆盖。
-3. `electron-builder.config.cjs` —— 中文包额外保留 Chromium 的 `zh-CN` 语言资源。
+3. `electron-builder.config.cjs` —— 中文包保留 Chromium 的 `zh-CN` 语言资源，并通过 `zh/installer.nsh` 启用简体中文 Windows 安装向导和目录选择；共享安装脚本 `build/installer.nsh` 提供安装阶段的扩展点。
 4. `ChatMediaPlayer.tsx` —— 解密视频后使用播放器的键盘控制启动播放，不依赖可翻译的英文按钮名。
 5. `electron/windowState.ts` 与“外观 → 显示”的启动窗口设置 —— 默认关闭窗口记忆，自动尺寸以 1200 × 800 逻辑像素为基准，宽高分别不超过屏幕可用区域的 80%；可改为自定义尺寸。尺寸设置下次启动生效，拖动窗口不覆盖自定义值。开启记忆后保存普通窗口大小、位置及最大化状态，首次无记录时自动适配；关闭时清除历史状态。配置存于本机 `userData/gryt-config.json` 的 `startupWindow` 和 `windowState`，通过专用 IPC 访问。恢复和显示器变更时校正位置，隐藏自启动不提前显示窗口，从托盘恢复不重新套用启动尺寸。
 
@@ -84,6 +84,8 @@ node zh/browser-smoke.mjs      # 先构建中文版并安装 Playwright Chromium
 node --test scripts/check-window-state.mjs # 启动尺寸、缩放、记忆、重启及显示器变化
 node scripts/check-window-state-electron.mjs # 中文桌面构建后：隔离临时目录实测窗口和 preload IPC
 node zh/window-settings-smoke.mjs         # 中文显示页：桌面控件交互、保存、校验与浏览器隐藏
+node --test zh/windows-installer.test.mjs # 安装配置及迁移备份归属检查
+node zh/windows-installer-smoke.mjs       # Windows：编译隔离测试安装包并实测取消、迁移、更新和卸载
 ```
 
 ## 上游更新后怎么跟进
@@ -129,3 +131,17 @@ gh run download <run-id> --repo bracy686/gryt-client
 ```
 
 产物：`Gryt-Chat-<版本>-win-x64-zh-cn.exe`（安装包）、`…-zh-cn-portable.exe`（便携版）。官方包也没签名，所以一样会有 SmartScreen 提示（更多信息 → 仍要运行）。
+
+### Windows 中文安装向导
+
+云端打包后读取本次 `builder-effective-config.yaml`，核验中文向导、安装目录选择及 `zh/installer.nsh` 已实际启用，并检查包内窗口设置功能。验证结果写入 `build-info.json`，与安装包一起归档。
+
+`GRYT_ZH=1` 的 NSIS 安装包使用简体中文向导：欢迎 → 选择目录 → 安装 → 完成，可选择其他磁盘。为兼容现有安装，默认子目录仍为 `gryt-chat`；框架会在不含该名称的所选路径后添加此子目录。当前只支持当前用户安装，拒绝 `/allusers` 和已有的所有用户安装，避免与现有 HKCU 迁移、helper 设置混用。未开启 `GRYT_ZH` 的构建沿用上游一键安装设置。
+
+打开向导只读取旧版状态，取消不会停止程序或改写卸载信息。点击安装后，先检查目标目录为空（或就是当前安装目录）且可写，再检查旧路径中的进程，最后执行必要的旧 NSIS 迁移。切换磁盘时同时修复已启用的 helper 自启动路径，不为新安装启用自启动。
+
+旧版迁移将原目录移到旁边唯一命名的 `.gryt-backup[.序号]`，不覆盖已有备份。新旧目录各保存 UTF-16 INI 回执，支持中文、空格路径；新客户端启动后仅清理归属吻合且包含旧程序和卸载程序的备份。安装或启动失败时保留恢复副本。正常升级仍交给 electron-builder 的卸载/安装流程。
+
+自动更新沿用注册的安装目录；客户端也明确将当前可执行文件目录传给更新器。更新跳过欢迎、目录、范围选择和完成页，保留原有“更新后重新打开”行为。账号、设置、缓存和内置服务器数据继续使用原 `userData` 目录，安装位置选择不迁移这些数据，卸载默认保留它们。安装路径和应用标识保持兼容，更新等待标记仍位于 `%APPDATA%\gryt-chat`。
+
+`windows-installer-smoke.mjs` 为每次运行生成独立 appId、注册表键、更新缓存、模拟用户数据目录和无功能程序，不注册 Gryt 协议或创建生产快捷方式，也不终止真实 helper。它会真实编译 NSIS 安装器/卸载器，验证初始化后取消、非空/不可写目录及所有用户模式拦截、含中文空格路径的迁移、旧备份保护、helper 既有注册的路径修复、更新保持目录、非静默更新自动结束，以及自选目录的新装/卸载/重装。相关检查已接入中文 Windows 工作流。

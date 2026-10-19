@@ -39,6 +39,16 @@ const config = yaml.load(
 
 if (/^(1|true|yes|on)$/i.test(process.env.GRYT_ZH ?? "")) {
   config.electronLanguages = [...new Set([...config.electronLanguages, "zh-CN"])];
+  config.nsis = {
+    ...config.nsis,
+    oneClick: false,
+    perMachine: false,
+    selectPerMachineByDefault: false,
+    allowToChangeInstallationDirectory: true,
+    installerLanguages: ["zh_CN"],
+    language: "2052",
+    include: "zh/installer.nsh",
+  };
 }
 
 if (SLIM) {

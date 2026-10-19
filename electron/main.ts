@@ -25,6 +25,7 @@ import {
   copyFileSync,
   createReadStream,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   rmSync,
@@ -165,6 +166,7 @@ import {
   patchUser,
   saveUser,
 } from "./userStore";
+import { cleanupWindowsMigrationBackup } from "./windowsInstallMigration";
 import { createWindowStateManager } from "./windowState";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -871,7 +873,9 @@ function cleanupLegacyWindowsInstallBackup(): void {
   const previousBackupDir = `${installDir}.old.previous`;
 
   try {
-    if (existsSync(backupDir)) {
+    cleanupWindowsMigrationBackup(installDir, startupLog);
+    if (existsSync(join(backupDir, "Gryt Chat.exe"))
+      && existsSync(join(backupDir, "Uninstall Gryt Chat.exe")) && !lstatSync(backupDir).isSymbolicLink()) {
       startupLog(`Windows migration: removing rollback backup ${backupDir}`);
       rmSync(backupDir, {
         recursive: true,
@@ -879,7 +883,8 @@ function cleanupLegacyWindowsInstallBackup(): void {
       });
     }
 
-    if (existsSync(previousBackupDir)) {
+    if (existsSync(join(previousBackupDir, "Gryt Chat.exe"))
+      && existsSync(join(previousBackupDir, "Uninstall Gryt Chat.exe")) && !lstatSync(previousBackupDir).isSymbolicLink()) {
       startupLog(
         `Windows migration: removing previous rollback backup ${previousBackupDir}`
       );
@@ -934,6 +939,9 @@ class WindowsUpdater extends NsisUpdater {
 
   /** Both routes in, a restart and an install on quit, so a launch meanwhile can see it. */
   protected override doInstall(options: InstallOptions): boolean {
+    if (app.isPackaged && !process.env.PORTABLE_EXECUTABLE_DIR) {
+      this.installDirectory = dirname(process.execPath);
+    }
     const installer = this.installerPath;
     if (installer) {
       try {

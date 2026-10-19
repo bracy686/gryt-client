@@ -73,6 +73,12 @@ jobs:
       - name: 启动窗口配置检查
         run: node --test scripts/check-window-state.mjs
 
+      - name: 安装向导配置与备份安全检查
+        run: node --test zh/windows-installer.test.mjs
+
+      - name: Windows 安装与升级实测（隔离测试程序）
+        run: node zh/windows-installer-smoke.mjs
+
       - name: 构建前端与主进程
         run: npx cross-env ELECTRON=1 vite build
 
@@ -110,6 +116,9 @@ jobs:
             console.log("app.asar 内含中文，OK");
           '
 
+      - name: 核验安装目录选择与窗口设置都已进入本次包
+        run: node zh/check-windows-package.mjs
+
       - uses: actions/upload-artifact@v4
         with:
           name: gryt-windows-zh-${{ inputs.tag }}
@@ -118,4 +127,5 @@ jobs:
             release/*.blockmap
             release/latest.yml
             release/slim.yml
+            release/build-info.json
           retention-days: 30
