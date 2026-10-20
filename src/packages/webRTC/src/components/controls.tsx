@@ -22,6 +22,7 @@ import { senderStreamId } from "../utils/senderStreamIds";
 import { liftScreenCapture, qualityBox } from "../utils/streamQuality";
 import { CallControlButton, LEAVE_CLASS } from "./CallControlButton";
 import { CameraControl } from "./CameraControl";
+import { NoiseReductionControl } from "./NoiseReductionControl";
 import { ScreenAudioSourcesModal } from "./ScreenAudioSourcesModal";
 import { ScreenShareControl } from "./ScreenShareControl";
 
@@ -429,7 +430,7 @@ export function Controls({ onDisconnect }: ControlsProps) {
   return (
     <>
       {isBrowserSupported && (
-        // Seven 32px controls at gap-4 are 320px, wider than the 300px window Electron allows.
+        // Extra media controls can exceed the 300px window Electron allows, so wrap them.
         <div className="flex flex-wrap items-center justify-center gap-2 min-[400px]:gap-4">
           {/*
             Every control here is icon-only, so the tooltip text is also the
@@ -461,6 +462,8 @@ export function Controls({ onDisconnect }: ControlsProps) {
               {(isDeafened || isServerDeafened) ? <PiSpeakerSlashFill size={16} /> : <PiSpeakerHighFill size={16} />}
             </CallControlButton>
           </MaybeTooltip>
+
+          <NoiseReductionControl />
 
           <CameraControl allowed={canIn(currentChannelConnected, "share_video")} />
 

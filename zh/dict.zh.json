@@ -1426,6 +1426,8 @@
   "Noise Gate:": "噪声门：",
   "Noise gate:": "噪声门：",
   "Noise reduction": "降噪",
+  "Enable noise reduction": "开启降噪",
+  "Disable noise reduction": "关闭降噪",
   "Noise suppression disabled": "噪声抑制已关闭",
   "None": "无",
   "None of the {0} addresses advertised for voice can be reached from here.": "为语音公布的 {0} 个地址从这里都无法访问。",

@@ -35,6 +35,7 @@ git config remote.pushDefault origin
 3. `electron-builder.config.cjs` —— 中文包保留 Chromium 的 `zh-CN` 语言资源，并通过 `zh/installer.nsh` 启用简体中文 Windows 安装向导和目录选择；共享安装脚本 `build/installer.nsh` 提供安装阶段的扩展点。
 4. `ChatMediaPlayer.tsx` —— 解密视频后使用播放器的键盘控制启动播放，不依赖可翻译的英文按钮名。
 5. `electron/windowState.ts` 与“外观 → 显示”的启动窗口设置 —— 默认关闭窗口记忆，自动尺寸以 1200 × 800 逻辑像素为基准，宽高分别不超过屏幕可用区域的 80%；可改为自定义尺寸。尺寸设置下次启动生效，拖动窗口不覆盖自定义值。开启记忆后保存普通窗口大小、位置及最大化状态，首次无记录时自动适配；关闭时清除历史状态。配置存于本机 `userData/gryt-config.json` 的 `startupWindow` 和 `windowState`，通过专用 IPC 访问。恢复和显示器变更时校正位置，隐藏自启动不提前显示窗口，从托盘恢复不重新套用启动尺寸。
+6. `NoiseReductionControl.tsx` 与两处通话控制栏 —— 在扬声器与摄像头之间加入降噪快捷开关，复用音频设置的 `rnnoiseEnabled` 及其持久化和实时语音配置。横向控制栏与侧栏胶囊共享手绘声波盾牌图标、中文提示和按下状态；与麦克风、声音按钮一致，开启使用默认状态，关闭使用带斜线的突出状态，颜色和悬停效果统一由 `CallControlButton` 及主题控制。
 
 ## 开关：GRYT_ZH
 

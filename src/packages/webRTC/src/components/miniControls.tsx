@@ -15,6 +15,7 @@ import { useVoicePresence } from "../adapters/useVoicePresence";
 import { CallCapsuleFace } from "./CallCapsuleFace";
 import { CallControlButton, LEAVE_CLASS } from "./CallControlButton";
 import { CameraControl } from "./CameraControl";
+import { NoiseReductionControl } from "./NoiseReductionControl";
 import { ScreenShareControl } from "./ScreenShareControl";
 
 const buttonAnimations: Variants = {
@@ -128,6 +129,10 @@ export function MiniControls({
                   <PiSpeakerHighFill size={iconSize} />
                 )}
               </CallControlButton>
+            </motion.div>
+
+            <motion.div variants={buttonAnimations}>
+              <NoiseReductionControl iconSize={iconSize} side={isColumn ? "right" : "top"} />
             </motion.div>
 
             {showCamera && (
