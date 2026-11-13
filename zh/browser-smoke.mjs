@@ -49,6 +49,14 @@ try {
   await fixture.locator('.chat-video-player[data-sealed="idle"] > button[aria-label="播放视频"]').click();
   await expect.poll(() => fixture.evaluate(() => window.__zhPlayCalls)).toBe(1);
   assert.equal(await fixture.locator('button[aria-label="Play video"]').count(), 0);
+  await fixture.getByRole("button", { name: "测试图片浏览", exact: true }).click();
+  const picture = fixture.locator(".gryt-lightbox img").first();
+  await expect(picture).toBeVisible();
+  await expect.poll(() => picture.evaluate((img) => img.naturalWidth)).toBe(200);
+  await expect(fixture.locator(".gryt-lightbox[data-moving]")).toHaveCount(0);
+  await fixture.keyboard.press("Escape");
+  await expect(fixture.locator(".gryt-lightbox")).toHaveCount(0);
+  console.log("✓ 图片浏览：react-motion-lightbox 0.10.0 加载原图并响应 Esc 关闭");
   assert.deepEqual(errors, []);
   console.log("✓ 中文组件：确认按钮、取消交互、加密视频解密后启动播放器");
   await fixture.close();
