@@ -91,7 +91,7 @@ node zh/windows-installer-smoke.mjs       # Windows：编译隔离测试安装�
 
 ## 本次上游同步
 
-当前基线为 v1.15.11。版本变化、冲突原因和处理方式见 [同步记录](UPSTREAM-1.15.11.md)。上游构建与检查脚本已迁移到 TypeScript，中文版打包使用 `electron-builder.config.ts`；中文 AST 工具及既有隔离测试暂保留 `.mjs`，逐项登记在 `.js-allowlist`。
+当前基线为 v1.15.12。版本变化、冲突原因和处理方式见 [同步记录](UPSTREAM-1.15.12.md)。上游构建与检查脚本已迁移到 TypeScript，中文版打包使用 `electron-builder.config.ts`；中文 AST 工具及既有隔离测试暂保留 `.mjs`，逐项登记在 `.js-allowlist`。
 
 ## 上游更新后怎么跟进
 
