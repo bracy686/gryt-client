@@ -74,6 +74,40 @@ export function playNotificationSound(url: string, sliderValue: number): void {
     });
 }
 
+/** Plays a sound on repeat, as a ringtone does, until stopped. The volume can change while it plays. */
+export function playLoopingSound(url: string, sliderValue: number): { stop: () => void; setVolume: (sliderValue: number) => void } {
+  const actx = getContext();
+  let source: AudioBufferSourceNode | null = null;
+  const gain = actx.createGain();
+  gain.gain.value = sliderToGain(sliderValue);
+  gain.connect(actx.destination);
+  let stopped = false;
+  fetchBuffer(url)
+    .then((buf) => {
+      if (stopped) return;
+      source = actx.createBufferSource();
+      source.buffer = buf;
+      source.loop = true;
+      source.connect(gain);
+      source.start();
+    })
+    .catch((err) => console.warn("[notificationSound] ringtone failed to play", err));
+  return {
+    stop: () => {
+      stopped = true;
+      try {
+        source?.stop();
+      } catch {
+        // Never started.
+      }
+      gain.disconnect();
+    },
+    setVolume: (next) => {
+      gain.gain.value = sliderToGain(next);
+    },
+  };
+}
+
 /**
  * Pre-fetch a sound's raw data so the first real playback is fast.
  * Does NOT create an AudioContext — decoding happens on first play.

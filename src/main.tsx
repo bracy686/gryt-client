@@ -184,6 +184,7 @@ function ThemedApp() {
         position="bottom-right"
         containerStyle={{ zIndex: "var(--gryt-z-toast)" }}
         toastOptions={{
+          className: "gryt-toast",
           style: {
             background: "var(--gryt-neutral-2)",
             color: "var(--gryt-neutral-12)",
@@ -215,7 +216,9 @@ initGlobalStorage().then(() => {
   // After the file store is loaded, or the desktop app would restore the old list over it.
   const cleared = clearWithdrawnBlocksOnce();
   if (cleared) console.log(`[ServerAuth] Cleared ${cleared} proof_withdrawn block(s) left by GRYT-1497`);
-  ReactDOM.createRoot(document.getElementById("root")!).render(
+  const rootEl = document.getElementById("root");
+  if (!rootEl) throw new Error("index.html has no #root");
+  ReactDOM.createRoot(rootEl).render(
     <React.StrictMode>
       {/* Runs every singleton hook body, once, inside this tree. Must sit above
           ThemedApp, which consumes several of them. */}

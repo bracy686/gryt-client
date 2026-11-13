@@ -68,6 +68,8 @@ export type ChatMessage = {
   pending?: boolean;
   /** Pending, and held until the server is back and knows who this is. */
   waiting?: boolean;
+  /** What a waiting message is waiting for, when it isn't the server. */
+  waitingNote?: string;
   failed?: boolean;
   nonce?: string;
   sender_nickname?: string;
@@ -97,6 +99,11 @@ export type ChatMessage = {
   sealedState?: "opening" | "open" | "locked" | "broken";
   /** Sent over MLS and read from this device's archive. Edits and deletes go that way too. */
   mls?: boolean;
+  /** Who sent this from their copy of the DM (GRYT-1875). */
+  shared_by?: string;
+  /** When the server got this copy. Its sent date is only what the sender says. */
+  received_at?: string;
+  imported_from?: "discord";
   /** Why a failed send failed, when there's more to say than that it did. */
   failure?: string;
   /** The line the server writes for apps from before MLS. This app hides it (GRYT-1517). */
@@ -158,8 +165,10 @@ function formatDateSeparator(d: Date): string {
   return d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
 }
 
-export const MessageTimestamp = ({ date }: { date: Date }) => (
-  <Tooltip title={formatFullDate(date)}>
+export const MessageTimestamp = ({ date, receivedAt }: { date: Date; receivedAt?: string }) => (
+  <Tooltip title={receivedAt
+    ? `Sent ${formatFullDate(date)}, according to the sender. Server received this copy ${formatFullDate(new Date(receivedAt))}.`
+    : formatFullDate(date)}>
     {/*
       gray-11 is Radix's low-contrast *text* step. gray-9 and gray-10 are solid
       steps meant for backgrounds and borders, and against the message surface

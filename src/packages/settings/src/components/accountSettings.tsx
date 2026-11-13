@@ -13,6 +13,7 @@ import {
   useAccount,
 } from "@/common";
 
+import { ScanToSignIn } from "../../../../components/scanToSignIn";
 import {
   getCustomAuthIssuer,
   getCustomIdentityUrl,
@@ -20,7 +21,6 @@ import {
   setCustomIdentityUrl,
 } from "../../../../config";
 import { PiEyeFill, PiInfoFill, PiSignOutFill } from "../../../../lib/icons";
-import { useLinkDevice } from "../../../../lib/pairing/useLinkDevice";
 import { useSettings } from "../hooks/useSettings";
 import { SettingsContainer } from "./settingsComponents";
 
@@ -68,7 +68,6 @@ function formatDate(value?: string | number): string | null {
 export function AccountSettings() {
   const { isSignedIn, login, logout, loginInProgress } = useAccount();
   const { showAdvanced } = useSettings();
-  const { open: openLinkDevice } = useLinkDevice();
   const [profile, setProfile] = useState<AccountProfile | null>(null);
   const [issuerInput, setIssuerInput] = useState(
     () => getCustomAuthIssuer() || "",
@@ -268,26 +267,11 @@ export function AccountSettings() {
             style={{ alignSelf: "flex-start" }}
             onClick={() => void login()}
           >
-            {loginInProgress
-              ? "Waiting for sign in…"
-              : isCustom
-                ? "Sign in with your own auth"
-                : "Sign in with Gryt"}
+            {loginInProgress && "Waiting for sign in…"}
+            {!loginInProgress && (isCustom ? "Sign in with your own auth" : "Sign in with Gryt")}
           </Button>
 
-          <div className="flex flex-col gap-1">
-            <span className="text-xs">
-              Signed in on another device, or using Gryt there as a guest? Link this one and it
-              gets the same identity and servers.
-            </span>
-            <Button size="small"
-              tone="neutral"
-              style={{ alignSelf: "flex-start" }}
-              onClick={openLinkDevice}
-            >
-              Link with another device
-            </Button>
-          </div>
+          <ScanToSignIn />
         </div>
       )}
 
@@ -297,7 +281,7 @@ export function AccountSettings() {
         message about certificates. Cyan matches every other advanced setting.
       */}
       {showAdvanced && (
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2" id="auth-server" data-setting="auth-server">
         <span className="font-medium text-sm" color="cyan">
           Auth server
         </span>

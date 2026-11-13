@@ -1,4 +1,3 @@
-
 import { getElectronAPI, isElectron } from "../../../../lib/electron";
 import { getDeviceId, isDeviceId } from "./deviceId";
 
@@ -355,6 +354,7 @@ export const SETTINGS_KEYS = [
   "autoGainTargetDb",
   "compressorEnabled",
   "compressorAmount",
+  "voiceBitrateKbps",
   "eSportsModeEnabled",
   "preEsportsSettings",
   "inputMode",
@@ -371,6 +371,9 @@ export const SETTINGS_KEYS = [
   "messageSoundEnabled",
   "messageSoundVolume",
   "customMessageSoundFile",
+  "ringtoneEnabled",
+  "ringtoneVolume",
+  "customRingtoneFile",
   "notificationBadgeEnabled",
   "showDebugOverlay",
   "showPeerLatency",
@@ -381,6 +384,7 @@ export const SETTINGS_KEYS = [
   "cameraQuality",
   "cameraMirrored",
   "faceFramingEnabled",
+  "cameraPreviewFirst",
   "voiceTileLayout",
   "voiceTwoPersonLayout",
   "devFakeParticipants",

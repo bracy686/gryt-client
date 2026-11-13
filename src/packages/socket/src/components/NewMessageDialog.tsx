@@ -9,6 +9,7 @@ import { requestConversation } from "../hooks/dmSpace";
 import { setNewMessageOpen, useNewMessageOpen } from "../hooks/newMessageDialog";
 import { conversationTitle } from "../hooks/useDirectMessages";
 import { canOnServer } from "../hooks/usePermissions";
+import { useReachable } from "../hooks/useReachable";
 import { useServerManagement } from "../hooks/useServerManagement";
 import { useSockets } from "../hooks/useSockets";
 import {
@@ -36,6 +37,12 @@ const ANSWER_MS = 10_000;
 type Waiting =
   | { kind: "dm"; host: string; serverUserId: string }
   | { kind: "group"; host: string; picked: string[]; before: ReadonlySet<string> };
+
+function noOneText(s: { canMessageSomewhere: boolean; groupBlocked: boolean; nobody: boolean; query: string }): string {
+  if (!s.canMessageSomewhere) return "None of your servers let you start a conversation.";
+  if (s.groupBlocked) return "None of your servers let you start a group.";
+  return s.nobody ? "There\u2019s nobody else on your servers yet." : `Nobody matches \u201c${s.query}\u201d.`;
+}
 
 export function NewMessageDialog() {
   const open = useNewMessageOpen();
@@ -71,6 +78,8 @@ export function NewMessageDialog() {
     sentName.current = "";
   }, [open]);
 
+  const reachable = useReachable(open);
+
   const serverName = (host: string) => servers[host]?.name || host;
 
   const people = useMemo(
@@ -85,9 +94,10 @@ export function NewMessageDialog() {
             members: memberLists[host] ?? [],
             canMessage: canOnServer(info, "send_direct_messages") && !dmsOff.has(host),
             canGroup: canOnServer(info, "create_groups"),
+            reachable: reachable[host],
           };
         }),
-    [sockets, serverConnectionStatus, serverDetailsList, memberLists, dmsOff],
+    [sockets, serverConnectionStatus, serverDetailsList, memberLists, dmsOff, reachable],
   );
 
   const everyone = useMemo(() => candidatesFor(people, mode), [people, mode]);
@@ -296,13 +306,7 @@ export function NewMessageDialog() {
     ? picked.map((id) => everyone.find((c) => c.host === groupHost && c.serverUserId === id)).filter((c): c is Candidate => !!c)
     : [];
 
-  const emptyText = !canMessageSomewhere
-    ? "None of your servers let you start a conversation."
-    : mode === "group" && !canGroupSomewhere
-      ? "None of your servers let you start a group."
-      : everyone.length === 0
-        ? "There\u2019s nobody else on your servers yet."
-        : `Nobody matches \u201c${query}\u201d.`;
+  const emptyText = noOneText({ canMessageSomewhere, groupBlocked: mode === "group" && !canGroupSomewhere, nobody: everyone.length === 0, query });
 
   const switchTo = (next: NewMessageMode) => {
     setMode(next);

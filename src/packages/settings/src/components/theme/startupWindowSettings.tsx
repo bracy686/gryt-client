@@ -157,9 +157,10 @@ export function StartupWindowSettingsPanel() {
         </SettingGroup>
       </>}
       {error && <div className="text-xs" role="alert">
-        {error === "load" ? "Could not load window settings." : error === "save" ? "Could not save window settings. Try again."
-          : error === "current" ? "Could not read the current window size."
-            : "Enter whole numbers from 300 to 16384 for width and height."}
+        {error === "load" && "Could not load window settings."}
+        {error === "save" && "Could not save window settings. Try again."}
+        {error === "current" && "Could not read the current window size."}
+        {error === "size" && "Enter whole numbers from 300 to 16384 for width and height."}
         {error === "load" && <Button tone="neutral" size="small" onClick={() => setRetry(retry + 1)}>Retry</Button>}
       </div>}
       {saved && !error && <p className="m-0 text-xs text-gryt-muted" role="status">

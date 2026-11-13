@@ -1,10 +1,10 @@
 import { ContextMenu, Slider } from "@gryt/ui";
-import { ReactNode } from "react";
+import type { ReactNode } from "react";
 import toast from "react-hot-toast";
 
 import { useSettings } from "@/settings";
 
-import { PiAtFill, PiChatTeardropTextFill, PiCheckBold, PiCopyFill, PiFlagFill, PiProhibitFill, PiUserPlusFill } from "../../../../lib/icons";
+import { PiAtBold, PiChatTeardropTextFill, PiCheckBold, PiCopyFill, PiFlagFill, PiProhibitFill, PiUserPlusFill } from "../../../../lib/icons";
 import { friendAction, useFriendState } from "../hooks/friendsStore";
 import { useServerPermissions } from "../hooks/usePermissions";
 import { makeRankOf } from "../lib/memberFacts";
@@ -63,6 +63,12 @@ interface UserContextMenuProps {
   onReport?: () => void;
 }
 
+const FRIEND_STEP: Partial<Record<string, { label: string; action: "request" | "accept" | "cancel" }>> = {
+  none: { label: "Add friend", action: "request" },
+  incoming: { label: "Accept friend request", action: "accept" },
+  outgoing: { label: "Cancel friend request", action: "cancel" },
+};
+
 export function UserContextMenu({
   children,
   serverHost,
@@ -92,11 +98,10 @@ export function UserContextMenu({
   const { has, can, roles } = useServerPermissions(serverHost || "");
   const friendship = useFriendState(serverHost, isSelf ? undefined : serverUserId);
   // One step at a time. Removing a friend lives in the Friends list, away from a quick right-click.
-  const friendItem = !serverHost || !serverUserId ? null
-    : friendship === "none" ? { label: "Add friend", onClick: () => friendAction(serverHost, "request", serverUserId) }
-      : friendship === "incoming" ? { label: "Accept friend request", onClick: () => friendAction(serverHost, "accept", serverUserId) }
-        : friendship === "outgoing" ? { label: "Cancel friend request", onClick: () => friendAction(serverHost, "cancel", serverUserId) }
-          : null;
+  const friendStep = friendship ? FRIEND_STEP[friendship] : undefined;
+  const friendItem = serverHost && serverUserId && friendStep
+    ? { label: friendStep.label, onClick: () => friendAction(serverHost, friendStep.action, serverUserId) }
+    : null;
 
   const handleCopyId = () => {
     if (!serverUserId) return;
@@ -228,7 +233,7 @@ export function UserContextMenu({
         )}
         <ContextMenu.Item onClick={handleMention}>
           <div className="flex items-center gap-2">
-            <PiAtFill size={14} /> Mention
+            <PiAtBold size={14} /> Mention
           </div>
         </ContextMenu.Item>
         <ContextMenu.Item onClick={handleCopyId}>

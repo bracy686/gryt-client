@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-const SIDEBAR_WIDTH_PX = 240;
+import { VOICE_PRESET_1, voicePresets, type VoiceStop, voiceStopWidth } from "../lib/voiceGrip";
+
+const SIDEBAR_WIDTH_PX = 200;
 const SIDEBAR_HOVER_PX = 8;
 const SIDEBAR_CLOSE_DELAY = 1000;
-// GRYT-40's "Shown" state: one fixed sidebar width, no drag handle. 600 is what
-// the Meet layout was checked against and where a third column starts winning.
+// Only says "this server has a call" now; the grip sets the drawn width (lib/voiceGrip.ts).
 const VOICE_SIDEBAR_WIDTH = 600;
 const MIN_CHAT_WIDTH = 200;
 
 interface UseMediaAutoShowParams {
   showVoiceView: boolean;
   setShowVoiceView: (v: boolean) => void;
-  isCompact: boolean;
   /** Whether the window can hold the panel beside a channel list and a chat. */
   roomForVoice: boolean;
   isConnected: boolean;
@@ -20,14 +20,11 @@ interface UseMediaAutoShowParams {
 }
 
 function useMediaAutoShow({
-  showVoiceView, setShowVoiceView, isCompact, roomForVoice, isConnected,
+  showVoiceView, setShowVoiceView, roomForVoice, isConnected,
   currentChannelId, serverClients,
 }: UseMediaAutoShowParams) {
-  /*
-   * The panel gets out of the way when the window cannot hold it: `isCompact` is
-   * 1024 and the row needs 1136, so between the two the chat went under.
-   */
-  const tooNarrow = isCompact || !roomForVoice;
+  // Below the compact width the call still shows, full (GRYT-1899); only a window too small for it hides it.
+  const tooNarrow = !roomForVoice;
   const compactAutoHiddenRef = useRef(false);
   useEffect(() => {
     if (tooNarrow && showVoiceView) {
@@ -77,7 +74,6 @@ interface UseSidebarHoverParams {
   pinChannelsSidebar: boolean;
   pinMembersSidebar: boolean;
   isDraggingResize: boolean;
-  isCompact: boolean;
   /**
    * Whether the row can pay for the member list, which depends on the voice
    * panel and not only on the window. See `lib/narrowLayout.ts`.
@@ -85,7 +81,7 @@ interface UseSidebarHoverParams {
   roomForMembers: boolean;
 }
 
-function useSidebarHover({ pinChannelsSidebar, pinMembersSidebar, isDraggingResize, isCompact, roomForMembers }: UseSidebarHoverParams) {
+function useSidebarHover({ pinChannelsSidebar, pinMembersSidebar, isDraggingResize, roomForMembers }: UseSidebarHoverParams) {
   const [hoverLeftSidebar, setHoverLeftSidebar] = useState(false);
   const [hoverRightSidebar, setHoverRightSidebar] = useState(false);
   const leftCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -96,7 +92,8 @@ function useSidebarHover({ pinChannelsSidebar, pinMembersSidebar, isDraggingResi
   const leftSidebarContentRef = useRef<HTMLDivElement>(null);
   const rightSidebarContentRef = useRef<HTMLDivElement>(null);
 
-  const leftSidebarOpen = (!isCompact && pinChannelsSidebar) || hoverLeftSidebar;
+  // A narrow window folds the list to icons rather than hiding it (GRYT-1899), so only an unpinned list hides.
+  const leftSidebarOpen = pinChannelsSidebar || hoverLeftSidebar;
 
   /*
    * Hovering is gated too, not just the pin. The member panel is `flexShrink: 0`
@@ -163,48 +160,56 @@ interface UseVoiceLayoutParams {
   setShowVoiceView: (v: boolean) => void;
 }
 
-/**
- * The voice view's layout state: minimized is `showVoiceView === false`, shown is
- * the fixed sidebar width, maximized fills the row. Neither is persisted.
- */
+/** The voice view's size: hidden is `showVoiceView === false`, otherwise a width or full. Not persisted. */
 function useVoiceLayout({ setShowVoiceView }: UseVoiceLayoutParams) {
   const [voiceFocused, setVoiceFocused] = useState(false);
-  const [isMaximized, setIsMaximized] = useState(false);
+  const [voiceSize, setVoiceSize] = useState<Exclude<VoiceStop, "hidden">>(VOICE_PRESET_1);
 
-  const voiceContainerRef = useRef<HTMLDivElement>(null);
+  // A callback ref: the middle area mounts after the first render, so an effect on a plain ref never observed it.
+  const voiceContainerRef = useRef<HTMLDivElement | null>(null);
+  const [voiceContainer, setVoiceContainer] = useState<HTMLDivElement | null>(null);
+  const attachVoiceContainer = useCallback((el: HTMLDivElement | null) => {
+    voiceContainerRef.current = el;
+    setVoiceContainer(el);
+  }, []);
   const [voiceContainerWidth, setVoiceContainerWidth] = useState(0);
 
   useEffect(() => {
-    const el = voiceContainerRef.current;
-    if (!el) return;
+    if (!voiceContainer) return;
     const ro = new ResizeObserver(([entry]) => {
       setVoiceContainerWidth(entry.contentRect.width);
     });
-    ro.observe(el);
+    ro.observe(voiceContainer);
     return () => ro.disconnect();
-  }, []);
+  }, [voiceContainer]);
+
+  // Too narrow for a preset, the call is full; the chosen preset waits for a wider window.
+  const forcedFull = voiceContainerWidth > 0 && !voicePresets(voiceContainerWidth);
+  const isMaximized = voiceSize === "full" || forcedFull;
 
   const voiceMaxWidth = voiceContainerWidth > 0
     ? Math.max(0, voiceContainerWidth - MIN_CHAT_WIDTH)
     : 0;
 
-  // The sidebar width, unless the window is too narrow to leave the chat a
-  // usable column — then the chat's minimum wins and the panel gives way.
-  const shownVoiceWidth = voiceMaxWidth > 0
-    ? Math.min(VOICE_SIDEBAR_WIDTH, voiceMaxWidth)
-    : VOICE_SIDEBAR_WIDTH;
+  // Stops are the panel's visible width; the view's 16px right padding is the gap to the chat.
+  const chosenWidth = (voiceStopWidth(voiceSize, voiceContainerWidth) ?? VOICE_PRESET_1) + 16;
+  const shownVoiceWidth = voiceMaxWidth > 0 ? Math.min(chosenWidth, voiceMaxWidth) : chosenWidth;
 
-  const toggleMaximized = useCallback(() => {
-    // Maximizing while minimized would grow something invisible. Read here rather
-    // than inside the updater, which used to call setShowVoiceView from within one.
-    if (!isMaximized) setShowVoiceView(true);
-    setIsMaximized(!isMaximized);
-  }, [isMaximized, setShowVoiceView]);
+  const setVoiceStop = useCallback((stop: VoiceStop) => {
+    if (stop === "hidden") {
+      // Whatever opens it next (the grip, the channel, a peek) brings preset 1 back, as on the Journey board.
+      setVoiceSize(VOICE_PRESET_1);
+      setShowVoiceView(false);
+      return;
+    }
+    if (!(stop === "full" && forcedFull)) setVoiceSize(stop);
+    setShowVoiceView(true);
+  }, [setShowVoiceView, forcedFull]);
 
   return {
     voiceFocused, setVoiceFocused,
-    isMaximized, toggleMaximized,
-    voiceContainerRef, voiceMaxWidth, shownVoiceWidth,
+    isMaximized, forcedFull, voiceSize, setVoiceStop, voiceContainerWidth,
+    voiceContainerRef, attachVoiceContainer, voiceMaxWidth, shownVoiceWidth,
   };
 }
 

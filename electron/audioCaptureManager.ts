@@ -3,12 +3,12 @@
  * process per capture, summed here; choosing applications is Windows only.
  */
 
-import { ChildProcess, execFileSync, spawn } from "child_process";
-import { app, BrowserWindow } from "electron";
+import { type ChildProcess, execFileSync, spawn } from "child_process";
+import { app, type BrowserWindow } from "electron";
 import { existsSync } from "fs";
 import { join } from "path";
 
-import { AudioMixer } from "./audioMixer";
+import { AudioMixer, wholeFrames } from "./audioMixer";
 import { type CaptureProblem, NO_AUDIO_TIMEOUT_MS, problemFromExit, problemFromSilence } from "./captureHealth";
 import { type CapturePlan, planCaptureChange, SYSTEM_AUDIO_SOURCE_ID } from "./captureSet";
 
@@ -25,6 +25,15 @@ function pidKey(pid: number): string {
 
 const captures = new Map<string, Capture>();
 const mixer = new AudioMixer();
+
+/* A renderer that keeps each window's sound apart opts in, and then gets every capture on its
+   own, tagged with the windows it belongs to, instead of the mix (GRYT-1905). */
+let perSource = false;
+const sourcesByKey = new Map<string, string[]>();
+
+export function setPerSourceAudio(on: boolean): void {
+  perSource = on;
+}
 
 /**
  * The window source ids the renderer last asked for, which is what it gets back.
@@ -92,6 +101,11 @@ function resolveWindowPid(sourceId: string): number | null {
     console.warn("[NativeAudioCapture] failed to resolve HWND to PID:", err);
     return null;
   }
+}
+
+/** Gryt's own processes. A Gryt window shared with its sound would send the call back into itself. */
+function isGrytPid(pid: number): boolean {
+  return pid === process.pid || app.getAppMetrics().some((m) => m.pid === pid);
 }
 
 export function isNativeAudioCaptureAvailable(): boolean {
@@ -177,6 +191,7 @@ function spawnCapture(
   startStats();
 
   let firstDataLogged = false;
+  let carry: Buffer = Buffer.alloc(0);
   let stderr = "";
   const startedAt = Date.now();
 
@@ -200,6 +215,15 @@ function spawnCapture(
       firstDataLogged = true;
     }
 
+    if (perSource) {
+      const out = wholeFrames(carry, chunk);
+      carry = out.carry;
+      if (out.frames.byteLength) {
+        const ab = out.frames.buffer.slice(out.frames.byteOffset, out.frames.byteOffset + out.frames.byteLength);
+        window.webContents.send("native-audio-source-data", { sourceIds: sourcesByKey.get(id) ?? [], pcm: ab });
+      }
+      return;
+    }
     mixer.push(id, chunk);
     drain(window);
   });
@@ -286,14 +310,17 @@ export function startNativeAudioCapture(
 
   if (sourceId && sourceId.startsWith("window:")) {
     const windowPid = resolveWindowPid(sourceId);
-    if (!windowPid) {
-      sendDiag(`could not resolve PID for ${sourceId}, falling back to exclude mode`);
-      mode = "exclude";
-      targetPid = process.pid;
-    } else {
-      mode = "include";
-      targetPid = windowPid;
+    if (windowPid && isGrytPid(windowPid)) {
+      sendDiag(`${sourceId} is a Gryt window, not capturing its sound`);
+      return false;
     }
+    // Never everything-but-Gryt for one window: that would send audio the sharer didn't pick.
+    if (!windowPid) {
+      sendDiag(`could not resolve PID for ${sourceId}, not capturing its sound`);
+      return false;
+    }
+    mode = "include";
+    targetPid = windowPid;
   } else {
     mode = "exclude";
     targetPid = process.pid;
@@ -301,6 +328,7 @@ export function startNativeAudioCapture(
 
   sendDiag(`start requested sourceId=${sourceId ?? "none"}`);
 
+  sourcesByKey.set(SYSTEM_AUDIO_SOURCE_ID, sourceId ? [sourceId] : []);
   return spawnCapture(window, SYSTEM_AUDIO_SOURCE_ID, mode, targetPid);
 }
 
@@ -328,8 +356,18 @@ export function setAudioCaptureApplications(
       sendDiag(`could not resolve PID for ${sourceId}, not capturing it`);
       continue;
     }
+    if (isGrytPid(pid)) {
+      sendDiag(`${sourceId} is a Gryt window, not capturing its sound`);
+      continue;
+    }
 
     resolved.push({ sourceId, key: pidKey(pid) });
+  }
+
+  // Windows were asked for and none can be captured: send none, never everything else on the machine.
+  if (sourceIds.length > 0 && resolved.length === 0) {
+    stopNativeAudioCapture();
+    return [];
   }
 
   const plan: CapturePlan = planCaptureChange(
@@ -350,18 +388,17 @@ export function setAudioCaptureApplications(
     spawnCapture(window, key, "include", pid);
   }
 
-  // Nothing could be started and the machine-wide capture is already gone.
-  // Falling back beats ending the share's audio without saying so.
   if (captures.size === 0) {
-    sendDiag("no application capture could be started, falling back to the machine");
-    requestedSources = [];
-    startNativeAudioCapture(window);
-    return listAudioCaptureSources();
+    sendDiag("no application capture could be started, sending no sound");
+    stopNativeAudioCapture();
+    return [];
   }
 
   requestedSources = resolved
     .filter((r) => captures.has(r.key))
     .map((r) => r.sourceId);
+  for (const key of [...sourcesByKey.keys()]) if (key !== SYSTEM_AUDIO_SOURCE_ID) sourcesByKey.delete(key);
+  for (const r of resolved) sourcesByKey.set(r.key, [...(sourcesByKey.get(r.key) ?? []), r.sourceId]);
 
   return listAudioCaptureSources();
 }

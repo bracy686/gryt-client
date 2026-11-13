@@ -25,21 +25,28 @@ import {
   ServerSettingsModal,
   useServerManagement,
 } from "@/socket";
+import { FriendRequestDialog } from "@/socket/src/components/FriendRequestDialog";
 import type { InviteJoinRequest } from "@/socket/src/components/InviteAcceptModal";
 import { useVoiceSounds } from "@/webRTC";
 
 import { ApproveDeviceDialog } from "./components/approveDevice";
+import { ApproveThisDevice } from "./components/approveThisDevice";
 import { AuthLoadingOverlay } from "./components/AuthLoadingOverlay";
 import { CallStatsRecorder } from "./components/callStatsRecorder";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { GameDetectPrompt } from "./components/gameDetectPrompt";
 import { GlobalLightbox } from "./components/GlobalLightbox";
+import { HandoverRequestDialog } from "./components/handoverRequestDialog";
 import { IdentityClaimPrompt } from "./components/identityClaimPrompt";
+import { KeyResetDialog } from "./components/keyResetDialog";
 import { LeaveServer } from "./components/leaveServer";
 import { LinkDeviceDialog } from "./components/linkDevice";
 import { MainApp } from "./components/mainApp";
+import { MainIdentity } from "./components/MainIdentity";
 import { MicrophoneDebugOverlay } from "./components/microphoneDebugOverlay";
 import { ReportDialog } from "./components/reportDialog";
+import { SaveWordsDialog } from "./components/saveWordsDialog";
+import { SignInApproval } from "./components/signInApproval";
 import { TermsPrompt } from "./components/termsPrompt";
 import { TrayVoiceState } from "./components/trayVoiceState";
 import { VaultUpgradePrompt } from "./components/vaultUpgradePrompt";
@@ -145,6 +152,12 @@ export function App() {
           <Settings />
           <Welcome />
           <LinkDeviceDialog />
+          <ApproveThisDevice />
+          <SaveWordsDialog />
+          <HandoverRequestDialog />
+          <KeyResetDialog />
+          <SignInApproval />
+          <FriendRequestDialog />
           <ApproveDeviceDialog />
           <AddNewServer showAddServer={showAddServer} setShowAddServer={setShowAddServer} />
           <LeaveServer />
@@ -161,6 +174,7 @@ export function App() {
             onGoToServer={handleGoToServer}
           />
           <IdentityClaimPrompt />
+          <MainIdentity />
           <VaultUpgradePrompt />
           <GameDetectPrompt />
           <GlobalLightbox />

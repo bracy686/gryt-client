@@ -1,12 +1,12 @@
 import { Button, Chip, Divider, Surface, Switch } from "@gryt/ui";
 import { useCallback, useEffect, useState } from "react";
 
-import { Wordmark } from "@/common";
+import { LogoIcon, Wordmark } from "@/common";
 import { requestWhatsNew } from "@/socket";
 
 import { FaGithub } from "../../../../lib/brandIcons";
-import { getElectronAPI, isElectron, isMacAppStoreBuild, isMicrosoftStoreBuild, MS_STORE_PAGE, UpdateStatus } from "../../../../lib/electron";
-import { PiArrowsClockwiseFill, PiArrowSquareOutFill, PiBugFill, PiChatTeardropDotsFill, PiCheckCircleFill, PiClockClockwiseFill, PiDesktopFill, PiDownloadSimpleFill, PiSignpost, PiXCircleFill } from "../../../../lib/icons";
+import { getElectronAPI, isElectron, isMacAppStoreBuild, isMicrosoftStoreBuild, MS_STORE_PAGE, type UpdateStatus } from "../../../../lib/electron";
+import { PiArrowsClockwiseFill, PiArrowSquareOutFill, PiBugFill, PiChatTeardropDotsFill, PiCheckCircleFill, PiClockClockwiseFill, PiDesktopFill, PiDownloadSimpleFill, PiXCircleFill } from "../../../../lib/icons";
 import { useReportForm } from "../../../../lib/reports/useReportForm";
 import { ConfirmDialog } from "../../../socket/src/components/ConfirmDialog";
 import { useSettings } from "../hooks/useSettings";
@@ -24,6 +24,13 @@ const PRIVACY_URL = "https://gryt.chat/privacy";
  * Assets list. /download resolves the build and starts it; no ?os= is needed here.
  */
 const DOWNLOAD_URL = "https://gryt.chat/download";
+
+function slimVariantLine({ pending, preferred }: { pending: boolean; preferred: boolean }): string {
+  if (pending && preferred) return "Switching to the build without it. Install the update below to finish.";
+  if (pending) return "Switching to the build with it. Install the update below to finish.";
+  if (preferred) return "Off. The download is about 34MB smaller, and you cannot host a server from the app.";
+  return "On. You can host a server from this app. It makes the download about 34MB bigger.";
+}
 
 function UpdateControls() {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
@@ -154,13 +161,7 @@ function UpdateControls() {
           <div className="flex flex-col gap-1">
             <span className="font-medium">Built-in server</span>
             <span className="text-gryt-muted">
-              {slimVariant.pending
-                ? slimVariant.preferred
-                  ? "Switching to the build without it. Install the update below to finish."
-                  : "Switching to the build with it. Install the update below to finish."
-                : slimVariant.preferred
-                  ? "Off. The download is about 34MB smaller, and you cannot host a server from the app."
-                  : "On. You can host a server from this app. It makes the download about 34MB bigger."}
+              {slimVariantLine(slimVariant)}
             </span>
             <span className="text-gryt-muted">
               Servers you already host stay where they are either way — their data does not
@@ -245,7 +246,7 @@ function UpdateControls() {
         title={switchingToBeta ? "Turn on beta releases?" : "Turn off beta releases?"}
         description={
           switchingToBeta
-            ? "Gryt will close and reopen to install the latest beta. Beta builds can have bugs and unfinished features."
+            ? "Gryt will close and reopen to install the latest beta. Beta builds can have bugs and unfinished features. Voice calls there use our new, experimental voice connection."
             : "Gryt will close and reopen to install the latest stable version. That is older than the beta you are on now, so anything added since will be gone until it reaches stable."
         }
         confirmLabel={switchingToBeta ? "Turn on beta" : "Turn off beta"}
@@ -414,8 +415,8 @@ export function AboutSettings() {
           Report a bug
         </Button>
         <Button size="small" tone="neutral" onClick={startTour}>
-          <PiSignpost size={16} />
-          Show me around
+          <LogoIcon size={16} />
+          Get a tour
         </Button>
       </div>
 
@@ -427,20 +428,19 @@ export function AboutSettings() {
  * Updates as a destination of its own, first in the sidebar — it used to sit at
  * the bottom of About. In the browser there is no updater, so it offers the app.
  */
+function UpdatesCard({ inElectron }: { inElectron: boolean }) {
+  if (!inElectron) return <DesktopAppCard />;
+  if (isMacAppStoreBuild()) return <AppStoreUpdates store="the Mac App Store" os="macos" />;
+  if (isMicrosoftStoreBuild()) return <AppStoreUpdates store="the Microsoft Store" os="windows" />;
+  return <UpdateControls />;
+}
+
 export function UpdatesSettings() {
   const inElectron = isElectron();
 
   return (
     <SettingsContainer>
-      {!inElectron ? (
-        <DesktopAppCard />
-      ) : isMacAppStoreBuild() ? (
-        <AppStoreUpdates store="the Mac App Store" os="macos" />
-      ) : isMicrosoftStoreBuild() ? (
-        <AppStoreUpdates store="the Microsoft Store" os="windows" />
-      ) : (
-        <UpdateControls />
-      )}
+      <UpdatesCard inElectron={inElectron} />
     </SettingsContainer>
   );
 }

@@ -1,14 +1,15 @@
 import { Menu, Tooltip } from "@gryt/ui";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Socket } from "socket.io-client";
+import type { Socket } from "socket.io-client";
 
 import type { SealDecision } from "@/common";
 import { getServerAccessToken, getSuppressEveryone, getUploadsFileUrl, resolveAvatarSrc, subscribeToPrefs, useTheme, useThreadMentions, useThreadUnread } from "@/common";
 import { nameTagsFor } from "@/lib/nameTags";
 import { useSettings } from "@/settings";
 
-import { PiArrowDownBold, PiChatsTeardropFill, PiChatTeardropTextFill, PiCloudArrowUpFill, PiDotsThreeBold, PiInfoFill, PiMagnifyingGlassBold, PiProhibitFill, PiRobotFill, PiShieldCheckFill, PiSpeakerHighFill } from "../../../../lib/icons";
-import { draftKey, returnDraft, takeReturnedDraft, useReturnedDraft } from "../hooks/returnedDrafts";
+import { PiArchiveFill, PiArrowDownBold, PiChatsTeardropFill, PiChatTeardropTextFill, PiCloudArrowUpFill, PiDotsThreeBold, PiMagnifyingGlassBold, PiProhibitFill, PiRobotFill, PiShieldCheckFill, PiSpeakerHighFill } from "../../../../lib/icons";
+import { registerThreadCloser, setThreadExpanded, useThreadExpanded } from "../hooks/openThreadMemory";
+import { draftKey, returnDraft, type ReturnedDraft, saveDraftToDisk, takeReturnedDraft, useReturnedDraft } from "../hooks/returnedDrafts";
 import { muteLiftsAt, useTextMute } from "../hooks/textMute";
 import { useChatActions } from "../hooks/useChatActions";
 import { useChatScroll } from "../hooks/useChatScroll";
@@ -20,6 +21,7 @@ import { useSockets } from "../hooks/useSockets";
 import { useThreads } from "../hooks/useThreads";
 import { useTypingIndicator } from "../hooks/useTypingIndicator";
 import { encryptedSince, noteEncrypted, useMarksHidden } from "../lib/unencryptedMarks";
+import type { MlsAction } from "../mls/useMlsConversation";
 import { fetchCustomEmojis, getCustomEmojis, onCustomEmojisChange, setCustomEmojis } from "../utils/emojiData";
 import { SEARCH_SHORTCUT } from "../utils/messageSearch";
 import type { NewPoll } from "../utils/polls";
@@ -40,8 +42,8 @@ import { readableRoleColor } from "./memberGroups";
 import type { MemberInfo } from "./MemberSidebar";
 import type { MentionMember } from "./MentionAutocomplete";
 import { MentionViewerContext } from "./mentionViewerContext";
-import { MessageKeyPrompt } from "./MessageKeyPrompt";
 import { MessageRow } from "./MessageRow";
+import { MlsNoticeLine } from "./MlsNoticeLine";
 import { PinsButton } from "./PinsButton";
 import { PollDialog } from "./PollDialog";
 import { ThreadPanel } from "./ThreadPanel";
@@ -49,6 +51,34 @@ import { TypingIndicator } from "./TypingIndicator";
 
 /** Room for the 160ms fade in style.css to start late on a busy frame and still finish. */
 const MESSAGE_ENTER_MS = 600;
+
+function placeholderFor(s: {
+  offlineLine: string | undefined;
+  voiceTextHidden: boolean | undefined;
+  mayRead: boolean | undefined;
+  maySend: boolean | undefined;
+  waitSeconds: number | null | undefined;
+  channelName: string | undefined;
+  dm: boolean;
+  inClear: boolean | undefined;
+}): string {
+  if (s.offlineLine) return s.offlineLine;
+  /* A placeholder, so short. The notice in the body says why. */
+  if (s.voiceTextHidden) return "Can't chat here right now";
+  if (!s.mayRead) return "This channel is not readable with your role.";
+  if (!s.maySend) return READ_ONLY_LINE;
+  if (s.waitSeconds) return `Please wait ${s.waitSeconds} seconds...`;
+  if (!s.channelName) return "Chat with your friends!";
+  if (!s.dm) return `Message #${s.channelName}`;
+  return `Message ${s.channelName}${s.inClear ? " (not encrypted)" : ""}`;
+}
+
+function HeaderGlyph({ forum, automated, voice }: { forum: boolean; automated: boolean | undefined; voice: boolean }) {
+  const style = { color: "var(--gryt-neutral-11)", flexShrink: 0 };
+  if (forum) return <PiChatsTeardropFill size={18} style={style} />;
+  if (automated) return <PiRobotFill size={18} style={style} />;
+  return voice ? <PiSpeakerHighFill size={18} style={style} /> : <PiChatTeardropTextFill size={18} style={style} />;
+}
 
 export type { AttachmentMeta, ChatMessage, Reaction } from "./chatUtils";
 
@@ -64,6 +94,8 @@ export interface MlsView {
   reportsTaken: boolean;
   /** This device's history won't open. Says why, with a retry and the way out. */
   archiveFailed: boolean;
+  /** Buttons for the notice line: ask again to be added, link this device. */
+  actions?: MlsAction[];
 }
 
 /** Where the composer would be, for somebody who may read a channel and not post. */
@@ -122,7 +154,7 @@ export const ChatView = memo(({
   /** Opens the search palette; no button without it (GRYT-1738). */
   onSearch?: () => void;
   /** A search hit to scroll to once its conversation has loaded. `nonce` lets the same message be picked twice. */
-  pendingJump?: { conversationId: string; messageId: string; nonce: number } | null;
+  pendingJump?: { conversationId: string; messageId: string; nonce: number; reply?: boolean } | null;
   /** The server dropped: the box says so and takes nothing until it's back (GRYT-1751). */
   offlineLine?: string;
   canSend: boolean;
@@ -130,7 +162,7 @@ export const ChatView = memo(({
   editMessage?: (messageId: string, conversationId: string, newText: string) => void;
   currentUserId?: string;
   currentUserNickname?: string;
-  socketConnection?: unknown;
+  socketConnection?: Socket | null;
   serverHost?: string;
   memberList?: Record<string, MemberInfo>;
   /** `chatMessages` arrives filtered, but the thread panel's come from
@@ -251,7 +283,7 @@ export const ChatView = memo(({
 
   // Threads live here so both the desktop and mobile chat views get them for
   // free — the socket, conversation and member list are all already in hand.
-  const threads = useThreads(socketConnection, conversationKey ?? "", serverHost, currentUserId, currentUserNickname);
+  const threads = useThreads(socketConnection ?? null, conversationKey ?? "", serverHost, currentUserId, currentUserNickname);
   const isForum = layout === "forum" && conversationKind !== "dm";
   const pins = usePins(socketConnection, conversationKey ?? "", serverHost);
   // The server's rule: manage_messages in a channel, anyone in a DM.
@@ -324,7 +356,9 @@ export const ChatView = memo(({
     if (chatMessages.length > 0 && chatMessages[0].conversation_id !== conversationKey) return;
     jumpedNonce.current = pendingJump.nonce;
     jumpToMessage(pendingJump.messageId);
-  }, [pendingJump, conversationKey, isLoadingMessages, chatMessages, jumpToMessage]);
+    const target = pendingJump.reply ? chatMessages.find((m) => m.message_id === pendingJump.messageId) : undefined;
+    if (target) handleReply(target);
+  }, [pendingJump, conversationKey, isLoadingMessages, chatMessages, jumpToMessage, handleReply]);
 
   const returnToPresent = useCallback(() => {
     historyWindow?.returnToPresent();
@@ -343,7 +377,7 @@ export const ChatView = memo(({
       : "This deletes the message for everyone. You can't undo it.";
 
   const { typingUsers, emitTyping, emitStopTyping } = useTypingIndicator(
-    (socketConnection as Socket) ?? null,
+    socketConnection ?? null,
     conversationKey ?? "",
   );
 
@@ -354,7 +388,7 @@ export const ChatView = memo(({
     emitTyping: emitThreadTyping,
     emitStopTyping: emitThreadStopTyping,
   } = useTypingIndicator(
-    (socketConnection as Socket) ?? null,
+    socketConnection ?? null,
     conversationKey ?? "",
     threads.open?.thread.thread_id ?? null,
   );
@@ -380,7 +414,7 @@ export const ChatView = memo(({
   const syncCustomEmojiList = useCallback(() => {
     const emojis = getCustomEmojis();
     setCustomEmojiList(
-      emojis.filter((e) => e.url).map((e) => ({ name: e.name, url: e.url! })),
+      emojis.flatMap((e) => (e.url ? [{ name: e.name, url: e.url }] : [])),
     );
   }, []);
 
@@ -415,10 +449,14 @@ export const ChatView = memo(({
 
   const handleViewDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); }, []);
 
-  const handleViewDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
+  // Capture phase: a drop on the message box is taken by the editor, which stops propagation.
+  const clearDragOver = useCallback(() => {
     dragCounterRef.current = 0;
     setIsDragOver(false);
+  }, []);
+
+  const handleViewDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
     const files = e.dataTransfer?.files;
     if (!files || files.length === 0) return;
     editorRef.current?.addFiles(files);
@@ -435,10 +473,17 @@ export const ChatView = memo(({
   // A send that failed, or was called off, comes back to the box it was typed in.
   const channelDraftKey = serverHost && conversationKey ? draftKey(serverHost, conversationKey) : "";
   const channelDraft = useReturnedDraft(channelDraftKey);
+  // Read as it changes: by the time a switch unmounts the view, the editor's ref is gone.
+  const latestDraft = useRef<ReturnedDraft | null>(null);
   useEffect(() => {
     if (!channelDraft || !editorRef.current) return;
+    const editor = editorRef.current;
     const draft = takeReturnedDraft(channelDraftKey);
-    if (draft) editorRef.current.restore(draft);
+    if (!draft) return;
+    const files = [...editor.getFiles(), ...draft.files];
+    editor.restore(draft);
+    // Noted whole: the files reach the editor's state a render later, and a switch before then lost them.
+    latestDraft.current = { text: editor.getMarkdown().trim(), files };
   }, [channelDraft, channelDraftKey]);
 
   const openThreadId = threads.open?.thread.thread_id;
@@ -459,12 +504,41 @@ export const ChatView = memo(({
       const files = editor?.getFiles() ?? [];
       if (key && (text || files.length > 0)) returnDraft(key, { text, files });
     };
+    // The channel's own box is stashed by the effect below, which also runs on unmount.
     stash(threadDraftKey, threadEditorRef.current);
-    stash(channelDraftKey, editorRef.current);
   };
   /* A layout effect, not a passive one: React has already detached the editor's
      ref by the time a passive cleanup for a deleted tree runs. */
   useLayoutEffect(() => () => stashDraftsRef.current(), []);
+
+  /* Each channel and DM keeps its own unsent message (GRYT-1841). Leaving one puts what's
+     in the box aside for it; arriving takes that channel's back through the effect above. */
+  const keepsOnDisk = conversationKind !== "dm";
+  const editingRef = useRef(editingMessage);
+  editingRef.current = editingMessage;
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const noteDraft = useCallback(() => {
+    const editor = editorRef.current;
+    // An edit in progress is somebody else's text, not a draft.
+    if (!editor || editingRef.current) return;
+    const draft = { text: editor.getMarkdown().trim(), files: editor.getFiles() };
+    latestDraft.current = draft;
+    if (!keepsOnDisk || !channelDraftKey) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => void saveDraftToDisk(channelDraftKey, draft), 500);
+  }, [keepsOnDisk, channelDraftKey]);
+  useLayoutEffect(() => {
+    latestDraft.current = null;
+    // A box kept across the switch still holds the last channel's words.
+    editorRef.current?.clear();
+    return () => {
+      clearTimeout(saveTimer.current);
+      const draft = latestDraft.current;
+      if (!channelDraftKey || !draft) return;
+      if (keepsOnDisk) void saveDraftToDisk(channelDraftKey, draft);
+      returnDraft(channelDraftKey, draft);
+    };
+  }, [channelDraftKey, keepsOnDisk]);
 
   /* Escape and the × both come through here. A half-written reply waits for
      this thread instead of going with the panel (GRYT-1387). */
@@ -478,6 +552,12 @@ export const ChatView = memo(({
     }
     threads.closeThread();
   }, [threadDraftKey, threads]);
+
+  const threadExpanded = useThreadExpanded();
+  useEffect(() => {
+    registerThreadCloser(closeThread);
+    return () => registerThreadCloser(null);
+  }, [closeThread]);
 
   // ── Sender helpers ────────────────────────────────────────────
   const getSenderName = useCallback((msg: ChatMessage): string => {
@@ -522,6 +602,7 @@ export const ChatView = memo(({
         m.nickname,
         m.avatarWorn,
       ) ?? null,
+      fallbackAvatarUrl: resolveAvatarSrc(undefined, m.nickname, m.avatarWorn) ?? null,
     }));
   }, [memberList, serverHost]);
 
@@ -575,6 +656,21 @@ export const ChatView = memo(({
     }
     return [...mentionMembers, ...extras];
   }, [conversationKind, knows, mayMentionEveryone, mentionMembers, roles]);
+  const [massSend, setMassSend] = useState<{ here: boolean; send: () => void } | null>(null);
+  const massReach = useMemo(() => {
+    const others = Object.values(memberList ?? {}).filter((m) => m.serverUserId !== currentUserId);
+    return { all: others.length, online: others.filter((m) => m.status !== "offline").length };
+  }, [memberList, currentUserId]);
+  const confirmMassMention = useMemo(
+    () => (mayMentionEveryone
+      ? (text: string, send: () => void) => {
+        const here = !/(^|\s)@everyone\b/.test(text);
+        if ((here ? massReach.online : massReach.all) === 0) send();
+        else setMassSend({ here, send });
+      }
+      : undefined),
+    [mayMentionEveryone, massReach],
+  );
   const composerChannels = useMemo<MentionMember[]>(
     () =>
       (serverDetailsList[serverHost ?? ""]?.channels ?? []).map((c) => ({
@@ -715,11 +811,7 @@ export const ChatView = memo(({
   /* A mute is the server's, not the channel's, so it covers the thread panel
      and every other conversation on the same host (GRYT-1400). */
   const textMute = useTextMute(serverHost);
-  const muteLine = textMute
-    ? textMute.until
-      ? `You’re muted on this server until ${muteLiftsAt(textMute.until)}.`
-      : "You’re muted on this server."
-    : null;
+  const muteLine = textMute && (textMute.until ? `You’re muted on this server until ${muteLiftsAt(textMute.until)}.` : "You’re muted on this server.");
 
   // The channel's answer alone, so an allow here works for a role that cannot
   // post elsewhere (GRYT-1418). A mute is on top, and server-wide.
@@ -730,7 +822,7 @@ export const ChatView = memo(({
   const postPoll = useCallback((poll: NewPoll) => {
     const accessToken = getServerAccessToken(serverHost ?? "");
     if (!socketConnection || !accessToken || !conversationKey) return;
-    (socketConnection as Socket).emit("chat:send", { conversationId: conversationKey, accessToken, poll });
+    socketConnection?.emit("chat:send", { conversationId: conversationKey, accessToken, poll });
   }, [socketConnection, serverHost, conversationKey]);
 
   const renderThreadComposer = useCallback(
@@ -785,21 +877,16 @@ export const ChatView = memo(({
   }, [sealing?.kind, conversationKind, serverHost, conversationKey]);
   const sealedFrom = conversationKind === "dm" && serverHost && conversationKey ? encryptedSince(serverHost, conversationKey) : null;
 
-  const editorPlaceholder = offlineLine
-    ? offlineLine
-    : !canViewVoiceChannelText && isVoiceChannelTextChat
-      ? "Text chat is not available in this voice channel"
-      : !mayRead
-        ? "This channel is not readable with your role."
-      : !maySend
-        ? READ_ONLY_LINE
-        : isRateLimited && rateLimitCountdown
-          ? `Please wait ${rateLimitCountdown} seconds...`
-          : channelName
-            ? conversationKind === "dm"
-              ? `Message ${channelName}${inClear ? " (not encrypted)" : ""}`
-              : `Message #${channelName}`
-            : "Chat with your friends!";
+  const editorPlaceholder = placeholderFor({
+    offlineLine,
+    voiceTextHidden: !canViewVoiceChannelText && isVoiceChannelTextChat,
+    mayRead,
+    maySend,
+    waitSeconds: isRateLimited ? rateLimitCountdown : 0,
+    channelName,
+    dm: conversationKind === "dm",
+    inClear,
+  });
 
   const editorDisabled = !!offlineLine || (!canViewVoiceChannelText && isVoiceChannelTextChat) || !maySend || !mayRead || !!mls?.held;
 
@@ -819,7 +906,7 @@ export const ChatView = memo(({
           background: "var(--gryt-neutral-3)",
           borderRadius: flush ? 0 : "var(--gryt-radius-lg)",
           position: "relative",
-        }} onDragEnter={handleViewDragEnter} onDragLeave={handleViewDragLeave} onDragOver={handleViewDragOver} onDrop={handleViewDrop}>
+        }} onDragEnter={handleViewDragEnter} onDragLeave={handleViewDragLeave} onDragOver={handleViewDragOver} onDropCapture={clearDragOver} onDrop={handleViewDrop}>
         {isDragOver && (
           <div className="chat-view-drop-overlay">
             <div className="chat-view-drop-overlay-content">
@@ -835,7 +922,7 @@ export const ChatView = memo(({
           {channelName && (
             <div className="flex min-w-0 items-center gap-2" data-gryt="chat-header" style={{ marginBottom: "16px", paddingBottom: "12px", borderBottom: "1px solid var(--gryt-neutral-6)" }}>
               {headerLead}
-              {headerIcon ?? (isForum ? <PiChatsTeardropFill size={18} style={{ color: "var(--gryt-neutral-11)", flexShrink: 0 }} /> : automated ? <PiRobotFill size={18} style={{ color: "var(--gryt-neutral-11)", flexShrink: 0 }} /> : channelType === "voice" && conversationKind === "channel" ? <PiSpeakerHighFill size={18} style={{ color: "var(--gryt-neutral-11)", flexShrink: 0 }} /> : <PiChatTeardropTextFill size={18} style={{ color: "var(--gryt-neutral-11)", flexShrink: 0 }} />)}
+              {headerIcon ?? <HeaderGlyph forum={isForum} automated={automated} voice={channelType === "voice" && conversationKind === "channel"} />}
               {/* One line that gives way, or a long name pushes the buttons out of a narrow window. */}
               {headerSubtitle ? (
                 <span className="flex min-w-0 flex-col gap-0.5">
@@ -888,7 +975,7 @@ export const ChatView = memo(({
 
           {isForum ? (
             <ForumView
-              socketConnection={socketConnection}
+              socketConnection={socketConnection ?? null}
               conversationId={conversationKey ?? ""}
               serverHost={serverHost}
               currentUserId={currentUserId}
@@ -903,31 +990,28 @@ export const ChatView = memo(({
               scrolls with a long conversation instead of sitting over it. */}
           {/* Not when it's unencrypted: the header, the box and the dots say that now (board 5). */}
           {conversationKind === "dm" && sealing?.kind !== "plaintext" && <DirectMessagePrivacyNotice decision={sealing} peerInClear={peerInClear} />}
-          {conversationKind === "dm" && <MessageKeyPrompt />}
 
-          {isVoiceChannelTextChat && !canViewVoiceChannelText && (
-            <div className="flex items-center justify-center" style={{ padding: "24px", textAlign: "center" }}>
-              <span className="text-base text-gryt-muted" style={{ maxWidth: "300px" }}>
-                Text chat is not available in this voice channel
+          {/* One notice. There were two blocks on this same condition, so both drew, and the
+              editor placeholder said it a third time. */}
+          {showVoiceDisabled && (
+            <div className="flex grow items-center justify-center">
+              <span className="text-sm text-gryt-muted" style={{ textAlign: "center", padding: "16px", maxWidth: "300px" }}>
+                There&rsquo;s no text chat here right now. It&rsquo;s either switched off for this
+                channel, or you need to join the call first.
               </span>
             </div>
           )}
-
-          {showVoiceDisabled ? (
-            <div className="flex grow items-center justify-center">
-              <span className="text-sm text-gryt-muted" style={{ textAlign: "center", padding: "16px" }}>
-                Text chat is disabled in this voice channel
-              </span>
-            </div>
-          ) : isLoadingMessages ? (
+          {!showVoiceDisabled && isLoadingMessages && (
             <div className="flex grow flex-col justify-end" style={{ paddingBottom: "16px" }}>
               <MessageSkeleton />
             </div>
-          ) : chatMessages.length === 0 ? (
+          )}
+          {!showVoiceDisabled && !isLoadingMessages && chatMessages.length === 0 && (
             <div className="flex grow items-center justify-center" style={{ paddingBottom: "16px" }}>
               <WelcomeMessage channelName={channelName} channelType={channelType} conversationKind={conversationKind} serverName={serverName} automated={automated} sealing={sealing} />
             </div>
-          ) : showMessages ? (
+          )}
+          {!showVoiceDisabled && !isLoadingMessages && chatMessages.length > 0 && showMessages && (
             <div
               ref={scrollRef}
               className="chat-scroll-container"
@@ -962,6 +1046,7 @@ export const ChatView = memo(({
                   const prev = chatMessages[i - 1];
                   const encryptedHere = sealedFrom !== null && !!prev && !prev.sealed && !prev.mls
                     && new Date(prev.created_at).getTime() < sealedFrom && new Date(m.created_at).getTime() >= sealedFrom;
+                  const discordEnds = !!prev?.imported_from && !m.imported_from;
 
                   return (
                     <Fragment key={rowKey}>
@@ -969,6 +1054,13 @@ export const ChatView = memo(({
                       <div role="note" className="flex items-center gap-3 py-2 text-xs" style={{ color: "var(--gryt-neutral-10)" }}>
                         <span className="h-px flex-1" style={{ background: "var(--gryt-neutral-5)" }} />
                         <span className="flex items-center gap-1.5"><PiShieldCheckFill size={11} aria-hidden /> Encrypted from here on</span>
+                        <span className="h-px flex-1" style={{ background: "var(--gryt-neutral-5)" }} />
+                      </div>
+                    )}
+                    {discordEnds && (
+                      <div role="note" className="flex items-center gap-3 py-2 text-xs" style={{ color: "var(--gryt-neutral-10)" }}>
+                        <span className="h-px flex-1" style={{ background: "var(--gryt-neutral-5)" }} />
+                        <span className="flex items-center gap-1.5"><PiArchiveFill size={11} aria-hidden /> Discord history ends here</span>
                         <span className="h-px flex-1" style={{ background: "var(--gryt-neutral-5)" }} />
                       </div>
                     )}
@@ -1020,7 +1112,7 @@ export const ChatView = memo(({
                 </div>
               )}
             </div>
-          ) : null}
+          )}
 
           {(historyWindow?.hasNewer || farFromBottom || newBelow > 0) && (
             // Zero-height anchor, so the pill floats over the last messages instead of pushing them up.
@@ -1048,16 +1140,7 @@ export const ChatView = memo(({
               when somebody comes back to a box that stopped taking input. */}
           {mls?.archiveFailed && <LocalHistoryProblem compact />}
 
-          {mls?.notice && !mls.archiveFailed && (
-            <div
-              aria-live="polite"
-              className="mb-1.5 flex items-start gap-1.5 px-1 text-xs leading-snug"
-              style={{ color: "var(--gryt-neutral-11)" }}
-            >
-              <PiInfoFill aria-hidden="true" size={13} style={{ flexShrink: 0, marginTop: "1px" }} />
-              <span>{mls.notice}</span>
-            </div>
-          )}
+          {mls?.notice && !mls.archiveFailed && <MlsNoticeLine notice={mls.notice} actions={mls.actions ?? []} />}
 
           {muteLine && (
             <div
@@ -1080,7 +1163,7 @@ export const ChatView = memo(({
             </div>
           ) : (
           <>
-          <TypingIndicator typingUsers={typingUsers} serverHost={serverHost} />
+          <TypingIndicator typingUsers={typingUsers} serverHost={serverHost} nameTags={nameTagsFor(memberList)} />
           <ChatEditorBar
             replyingTo={replyingTo}
             editingMessage={editingMessage}
@@ -1100,7 +1183,9 @@ export const ChatView = memo(({
             onArrowUpEmpty={handleArrowUpEmpty}
             onTyping={emitTyping}
             onStopTyping={emitStopTyping}
+            onChange={noteDraft}
             serverHost={serverHost}
+            confirmMassMention={confirmMassMention}
           />
           </>
           )}
@@ -1109,7 +1194,10 @@ export const ChatView = memo(({
           </div>
           {threads.open && (
             <ThreadPanel
-              beside={threadBeside}
+              beside={threadBeside && !threadExpanded}
+              expanded={threadBeside && threadExpanded}
+              onToggleExpand={threadBeside ? () => setThreadExpanded(!threadExpanded) : undefined}
+              channelName={channelName}
               thread={threads.open.thread}
               root={threads.open.root}
               messages={visibleThreadMessages}
@@ -1124,7 +1212,7 @@ export const ChatView = memo(({
               onClose={closeThread}
               onSetStatus={maySetThreadStatus ? threads.setStatus : undefined}
               typingIndicator={
-                <TypingIndicator typingUsers={threadTypingUsers} serverHost={serverHost} />
+                <TypingIndicator typingUsers={threadTypingUsers} serverHost={serverHost} nameTags={nameTagsFor(memberList)} />
               }
               forumTags={forumTags ?? []}
               onSetTags={maySetThreadStatus ? threads.setTags : undefined}
@@ -1148,6 +1236,17 @@ export const ChatView = memo(({
         description={deleteDescription}
         confirmLabel="Delete"
         onConfirm={confirmDelete}
+      />
+      <ConfirmDialog
+        open={!!massSend}
+        onOpenChange={(open) => { if (!open) setMassSend(null); }}
+        title={`Notify up to ${massSend?.here ? massReach.online : massReach.all} people?`}
+        description={massSend?.here
+          ? "@here pings everyone who's online and can read this channel. Each of them gets a notification."
+          : `@everyone pings everyone who can read this channel, and ${massReach.online} of them are online right now. Each of them gets a notification.`}
+        confirmLabel="Send and notify"
+        confirmTone="primary"
+        onConfirm={() => { massSend?.send(); setMassSend(null); }}
       />
     </MentionViewerContext.Provider>
   );

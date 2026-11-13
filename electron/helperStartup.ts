@@ -27,7 +27,7 @@ export interface StartupDeps {
   /** process.resourcesPath when packaged. */
   resourcesPath: string;
   isPackaged: boolean;
-  /** The client checkout in development, where scripts/build-helper.mjs puts helper/dist. */
+  /** The client checkout in development, where scripts/build-helper.ts puts helper/dist. */
   devRoot: string;
   mas: boolean;
   /** process.windowsStore: MSIX keeps its registry writes to itself, so a Run value would never be seen. */
@@ -193,7 +193,8 @@ export const runQuietly = (command: string, args: string[]): Promise<number> =>
   new Promise((resolve) => {
     execFile(command, args, { timeout: 10_000, windowsHide: true }, (err) => {
       const code = (err as { code?: unknown } | null)?.code;
-      resolve(err ? (typeof code === "number" ? code : 1) : 0);
+      if (!err) resolve(0);
+      else resolve(typeof code === "number" ? code : 1);
     });
   });
 

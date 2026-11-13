@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/ban-types -- IPC settings and persisted JSON are untrusted input validated here. */
 /** Desktop window dimensions are in device-independent pixels, including chrome. */
 export interface WindowSize {
   width: number;

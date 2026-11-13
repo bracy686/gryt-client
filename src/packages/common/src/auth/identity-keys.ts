@@ -10,6 +10,7 @@ import {
   type DmKeyPair,
   type MlsDevice,
   signDmKeyBinding,
+  signKeyHandover,
   signPersonKeyBinding,
 } from "@gryt/crypto";
 
@@ -207,12 +208,66 @@ async function readSeed(stored: StoredSeed | undefined): Promise<Uint8Array | nu
  */
 async function getOrCreateSeed(db: IDBDatabase): Promise<Uint8Array> {
   const existing = await readSeed(await idbGet<StoredSeed>(db, SEED_KEY));
-  if (existing) return existing;
+  if (existing) {
+    await uploadSyncedSeedOnce(existing);
+    return existing;
+  }
+
+  // A new Mac signed into your Apple ID: the iPhone's key, so it's the same you (GRYT-1881).
+  const synced = await syncedSeed();
+  if (synced) {
+    await writeSeed(db, synced);
+    console.log("[Identity] Took the identity seed from iCloud Keychain");
+    return synced;
+  }
 
   const seed = generateSeed();
   await writeSeed(db, seed);
+  setWordsUnsaved(true);
+  await getElectronAPI()?.writeSyncedSeed?.(toHex(seed)).catch(() => false);
   console.log("[Identity] Generated new local identity seed");
   return seed;
+}
+
+const WORDS_UNSAVED = "gryt_words_unsaved";
+
+/* Set when this device made a brand-new key, cleared once you've saved the words or got the key elsewhere. */
+function setWordsUnsaved(unsaved: boolean): void {
+  try {
+    if (unsaved) localStorage.setItem(WORDS_UNSAVED, "1");
+    else localStorage.removeItem(WORDS_UNSAVED);
+  } catch {
+    // No storage: the reminder just doesn't show, and the words stay in Your devices.
+  }
+}
+
+/** True on the device that made your key, until you say the 24 words are saved. */
+export function wordsNeedSaving(): boolean {
+  try {
+    return localStorage.getItem(WORDS_UNSAVED) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function markWordsSaved(): void {
+  setWordsUnsaved(false);
+}
+
+const toHex = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+
+async function syncedSeed(): Promise<Uint8Array | null> {
+  const hex = await getElectronAPI()?.readSyncedSeed?.().catch(() => null);
+  if (!hex || !/^[0-9a-f]{64}$/.test(hex)) return null;
+  return Uint8Array.from(hex.match(/../g) ?? [], (h) => parseInt(h, 16));
+}
+
+/* The phone's rule: this computer's own copy wins, and goes up only if iCloud has none. */
+let syncedSeedChecked = false;
+async function uploadSyncedSeedOnce(seed: Uint8Array): Promise<void> {
+  if (syncedSeedChecked) return;
+  syncedSeedChecked = true;
+  if (!(await syncedSeed())) await getElectronAPI()?.writeSyncedSeed?.(toHex(seed)).catch(() => false);
 }
 
 /** Checked once a session; the answer cannot change while the app is running. */
@@ -271,13 +326,9 @@ async function loadOrGenerateKeyPair(
         }
       : await crypto.subtle.generateKey(ALGO, false, ["sign", "verify"]);
 
-  // A derived key is not written down: it is reproducible from the seed and the
-  // scope. The account key is random, so it is still stored.
-  if (source.kind === "local") {
-    rememberGuestScope(identityScopeFor(source.host));
-  } else {
-    await idbPut(db, storageKey, stored);
-  }
+  // A derived key is reproducible from the seed, so only the random account key is stored.
+  // Deriving one isn't a guest visit: device linking and comparison codes derive them too.
+  if (source.kind !== "local") await idbPut(db, storageKey, stored);
   db.close();
 
   cachedKeyPairs.set(storageKey, stored);
@@ -378,6 +429,14 @@ export async function dmKeyBindingFor(host: string): Promise<string | null> {
     identityPrivateKey: identity.privateKey,
     identityPublicJwk,
   });
+}
+
+/** This device's key handing `host` over to `newBinding` (GRYT-1886). Signed like `dmKeyBindingFor`. */
+export async function keyHandoverFor(host: string, newBinding: string): Promise<string> {
+  const { seed, scope } = await readSeedFor(host);
+  const identity = await deriveLocalKeyPair(seed, scope);
+  const identityPublicJwk = await crypto.subtle.exportKey("jwk", identity.publicKey);
+  return signKeyHandover({ newBinding, scope, identityPrivateKey: identity.privateKey, identityPublicJwk });
 }
 
 async function readSeedFor(host: string): Promise<{ seed: Uint8Array; scope: IdentityScope }> {
@@ -875,6 +934,9 @@ export async function restoreIdentityFromWords(phrase: string): Promise<void> {
 
   cachedKeyPairs.clear();
   discardServerSessions();
+  setWordsUnsaved(false);
+  // Restored on purpose: this is the account's key now, so iCloud follows, as on the phone.
+  await getElectronAPI()?.writeSyncedSeed?.(toHex(seed)).catch(() => false);
 }
 
 /**
@@ -901,6 +963,8 @@ export async function installPairedIdentity(
   cachedKeyPairs.clear();
   discardServerSessions();
   rememberGuestScopes(keys.map((e) => e.scope));
+  setWordsUnsaved(false);
+  await getElectronAPI()?.writeSyncedSeed?.(toHex(seed)).catch(() => false);
 }
 
 /**

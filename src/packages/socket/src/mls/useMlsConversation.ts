@@ -12,12 +12,13 @@ import {
   useLocalArchive,
 } from "@/common";
 
+import { useLinkDevice } from "../../../../lib/pairing/useLinkDevice";
 import type { AttachmentMeta, ChatMessage } from "../components/chatUtils";
 import { draftKey, returnDraft } from "../hooks/returnedDrafts";
 import { uploadChatFile } from "../hooks/uploadChatFile";
 import { getMediaDimensions } from "../utils/imageUtils";
 import { openSealedAttachment } from "../utils/sealedAttachments";
-import { useMlsSource } from "./serverMls";
+import { askToApproveHere, useMlsSource } from "./serverMls";
 import type { ConversationProblems } from "./session";
 import { archivedRow, newMessage, sendFailure, withOpenedFiles } from "./timeline";
 
@@ -25,7 +26,17 @@ const PAGE = 50;
 /** Coalesces a catch-up's hundreds of archive writes into a few redraws. */
 const RELOAD_DEBOUNCE_MS = 150;
 const MODE_RETRY_MS = 5000;
+/** Each wait ends on a change in the chat, or after a minute; half an hour of tries in all. */
+const WAIT_FOR_WELCOME_MS = 60_000;
+const WAIT_FOR_WELCOME_TRIES = 30;
 const NO_PROBLEMS: ConversationProblems = { undecryptable: 0, lost: null };
+
+/** A button on the line above the composer. `confirm` asks first. */
+export interface MlsAction {
+  label: string;
+  run: () => void;
+  confirm?: { title: string; description: string; confirmLabel: string };
+}
 
 export interface MlsConversation {
   /** Null while it's being worked out, and for anything that isn't a one-to-one DM. */
@@ -46,6 +57,8 @@ export interface MlsConversation {
   remove: (messageId: string) => void;
   /** Adds this person's reaction, or takes it off if it's already there. */
   react: (messageId: string, emoji: string) => void;
+  /** What the line above the composer offers: ask again to be added, or link this device. */
+  actions: MlsAction[];
 }
 
 /** One DM on MLS: its mode, its archived messages and its sends (design, sections 5 and 6). */
@@ -64,6 +77,7 @@ export function useMlsConversation({
   nameFor: (id: string) => string | undefined;
 }): MlsConversation {
   const source = useMlsSource(host);
+  const { open: openLinkDevice } = useLinkDevice();
   const archiveNow = useLocalArchive();
   const archiveOpen = archiveNow.status.kind === "open";
   const archiveEpoch = archiveNow.epoch;
@@ -273,7 +287,27 @@ export function useMlsConversation({
           keys: Object.fromEntries(uploaded.flatMap((u) => (u.meta ? [[u.fileId, u.meta]] : []))),
         });
         if (!content) throw Object.assign(new Error("A file wasn't encrypted."), { code: "file_not_sealed" });
-        await source.send(conversationId, peer, content);
+        // Not in this chat yet: the message waits and goes once this device is added, rather than failing.
+        for (let tries = 0; ; tries++) {
+          try {
+            await source.send(conversationId, peer, content);
+            return;
+          } catch (e) {
+            if ((e as { code?: string })?.code !== "waiting_for_welcome" || tries >= WAIT_FOR_WELCOME_TRIES) throw e;
+            setDrafts((current) =>
+              current.map((m) => (m.nonce === nonce ? { ...m, waiting: true, waitingNote: "Sends by itself once this device is added to the chat" } : m)),
+            );
+            await new Promise<void>((resolve) => {
+              const done = () => {
+                off();
+                clearTimeout(timer);
+                resolve();
+              };
+              const off = source.onChange((id) => { if (id === conversationId || id === null) done(); });
+              const timer = setTimeout(done, WAIT_FOR_WELCOME_MS);
+            });
+          }
+        }
       })().catch((e: unknown) => {
         console.warn("[MLS] Send failed:", e);
         const code = (e as { code?: string })?.code;
@@ -326,6 +360,20 @@ export function useMlsConversation({
     home: archiveFacts.home,
     archiveFailed: !!conversationId && !!peer && archiveNow.status.kind === "failed",
     send,
+    actions: useMemo((): MlsAction[] => {
+      if (!active || !conversationId) return [];
+      const requestAdd = source?.requestAdd;
+      if (problems.lost === "not_added" && requestAdd) {
+        return [{ label: "Ask again", run: () => void requestAdd(conversationId).catch((e: unknown) => console.warn("[MLS] Couldn't ask to be added:", e)) }];
+      }
+      if (problems.lost !== "other_identity") return [];
+      // The safe choice first.
+      return [
+        { label: "Link this device", run: openLinkDevice },
+        // The server only takes a new key here with the old key's approval, or after a 30-day reset.
+        { label: "Other ways", run: () => askToApproveHere(host) },
+      ];
+    }, [active, source, conversationId, problems, host, openLinkDevice]),
     edit: useCallback(
       (id: string, text: string) => {
         const body = text.trim();

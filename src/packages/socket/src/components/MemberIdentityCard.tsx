@@ -1,6 +1,6 @@
-import { base64Url } from "@gryt/crypto";
+import { base64Url, type PeerPin } from "@gryt/crypto";
 import { CardIcon, CardMenu, type CardMenuItem,Popover } from "@gryt/ui";
-import { cloneElement, type ReactElement, type ReactNode, useEffect, useMemo, useState } from "react";
+import { cloneElement, type ReactElement, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 
 import {
@@ -9,7 +9,9 @@ import {
   getOwnServerUserId,
   getUploadsFileUrl,
   identityScopeFor,
+  localPeerPinStore,
   markPeerCompared,
+  openLocalArchive,
   ownComparisonSide,
   pinPeerKey,
   resolveAvatarSrc,
@@ -19,12 +21,15 @@ import { useSettings } from "@/settings";
 
 import { openLightbox } from "../../../../lib/lightboxStore";
 import { nameTags } from "../../../lib/nameTags";
+import { useDirectory } from "../hooks/dmDirectory";
 import { confirmServerFriend, friendAction, useAllFriends, useFriendState } from "../hooks/friendsStore";
 import { useServerPermissions } from "../hooks/usePermissions";
 import { useSockets } from "../hooks/useSockets";
 import { encodeCardStyle } from "../lib/memberCard/cardStyle";
 import { cardProfileFor } from "../lib/memberCard/generatedCard";
 import { formatJoined, makeRankOf, TIER_LABEL } from "../lib/memberFacts";
+import { useMlsSource } from "../mls/serverMls";
+import { shareHistory } from "../mls/shareHistory";
 import { friendButtonSteps, type FriendStep } from "../utils/friendButtonSteps";
 import { describeChange, describePin } from "../utils/memberKeyWording";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -92,6 +97,7 @@ export function MemberIdentityCard({
   serverHost,
   voiceChannelName,
   inline = false,
+  compareSignal = 0,
 }: {
   member: MemberInfo;
   /** Which server this member is shown on, for their key state, roles and uploads. */
@@ -100,6 +106,8 @@ export function MemberIdentityCard({
   voiceChannelName?: string;
   /** Drawn in a panel rather than a popover, so its buttons have nothing to close (GRYT-1745). */
   inline?: boolean;
+  /** Bumped by "Compare codes" and "Check their key": opens straight to the comparison. */
+  compareSignal?: number;
 }) {
   const Close = inline ? InlineClose : Popover.Close;
   const actions = useMemberCardActions();
@@ -152,9 +160,61 @@ export function MemberIdentityCard({
     ? { thumbprint: keyState.decision.verified.identityThumbprint, dmPublicKey: base64Url(keyState.decision.verified.dmPublicKey) }
     : null;
   const newCode = ownKeys && newKeys ? comparisonCode(ownKeys, newKeys) : null;
+  const [trustedPin, setTrustedPin] = useState<PeerPin | null>(null);
+  const directory = useDirectory();
+  const mlsSource = useMlsSource(serverHost);
+  const dmWithThem = directory.find(
+    (e) => e.host === serverHost && e.conversation.kind === "dm" && e.conversation.members[0]?.server_user_id === member.serverUserId,
+  );
+  const [sharing, setSharing] = useState<"idle" | "sending" | "sent">("idle");
+  /* GRYT-1875: offered only right after "trust it", so only once somebody checked it's them. */
+  const sendOurCopy = async () => {
+    if (!dmWithThem || !mlsSource) return;
+    setSharing("sending");
+    try {
+      const archive = (await openLocalArchive()).messages;
+      const sent = await shareHistory(mlsSource, archive, dmWithThem.conversation.conversation_id, member.serverUserId);
+      toast.success(`Sent ${member.nickname} your copy: ${sent} message${sent === 1 ? "" : "s"}`);
+      setSharing("sent");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn\u2019t send your copy");
+      setSharing("idle");
+    }
+  };
+  const [notThem, setNotThem] = useState(false);
+  const notThemKey = serverHost && newKeys
+    ? `gryt_key_not_them:${identityScopeFor(serverHost)} ${member.serverUserId} ${newKeys.thumbprint}`
+    : null;
+  useEffect(() => {
+    if (!notThemKey) return setNotThem(false);
+    try {
+      setNotThem(localStorage.getItem(notThemKey) === "1");
+    } catch {
+      setNotThem(false);
+    }
+  }, [notThemKey]);
+  const answerNotThem = (value: boolean) => {
+    if (!notThemKey) return;
+    try {
+      if (value) localStorage.setItem(notThemKey, "1");
+      else localStorage.removeItem(notThemKey);
+    } catch {
+      // Only remembered for this view then. Messages stay paused either way.
+    }
+    setNotThem(value);
+  };
+  /* Undo puts the pin from before "trust it" back, so the new key reads as changed again. */
+  const undoTrust = () => {
+    if (!serverHost || !trustedPin) return;
+    const key = `${identityScopeFor(serverHost)} ${member.serverUserId}`;
+    localPeerPinStore.write({ ...localPeerPinStore.read(), [key]: trustedPin });
+    setTrustedPin(null);
+    sockets[serverHost]?.emit("members:fetch");
+  };
   const trustNewKey = () => {
     if (!serverHost || keyState?.decision.kind !== "changed" || !newKeys) return;
     const scope = identityScopeFor(serverHost);
+    setTrustedPin(keyState.decision.pin);
     pinPeerKey(scope, member.serverUserId, keyState.decision.verified);
     // Compared, since that is what the button says happened.
     markPeerCompared(scope, member.serverUserId, newKeys);
@@ -187,6 +247,13 @@ export function MemberIdentityCard({
 
   const [open, setOpen] = useState(false);
   const [verifyOpen, setVerifyOpen] = useState(false);
+  const verifyRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (!compareSignal) return;
+    setOpen(true);
+    setVerifyOpen(true);
+    requestAnimationFrame(() => verifyRef.current?.scrollIntoView({ block: "center", behavior: "smooth" }));
+  }, [compareSignal]);
   const [menuOpen, setMenuOpen] = useState(false);
   const identityIsTheQuestion = member.identityTier === "local";
   const fingerprint = member.identityFingerprint;
@@ -233,7 +300,7 @@ export function MemberIdentityCard({
   const moreItems: CardMenuItem[] = [
     { key: "id", label: "Copy ID", onSelect: () => copy(member.serverUserId, "Copied user ID") },
     ...(!isSelf && actions.onToggleBlock
-      ? [{ key: "block", label: blocked ? "Unblock" : "Block", danger: !blocked, onSelect: () => actions.onToggleBlock!(member.serverUserId) }]
+      ? [{ key: "block", label: blocked ? "Unblock" : "Block", danger: !blocked, onSelect: () => actions.onToggleBlock?.(member.serverUserId) }]
       : []),
     {
       key: "style",
@@ -293,7 +360,7 @@ export function MemberIdentityCard({
         {!isSelf && actions.onOpenDm && can("send_direct_messages") && (
           <Close
             render={<button type="button" className="gmc-ib" aria-label="Message" data-tip="Message" />}
-            onClick={() => actions.onOpenDm!(member.serverUserId)}
+            onClick={() => actions.onOpenDm?.(member.serverUserId)}
           >
             <CardIcon.chat />
           </Close>
@@ -347,7 +414,7 @@ export function MemberIdentityCard({
             className="gmc-ib danger"
             aria-label="Report"
             data-tip="Report"
-            onClick={() => actions.onReport!({ serverUserId: member.serverUserId, nickname: member.nickname })}
+            onClick={() => actions.onReport?.({ serverUserId: member.serverUserId, nickname: member.nickname })}
           >
             <CardIcon.flag />
           </button>
@@ -372,7 +439,7 @@ export function MemberIdentityCard({
                 onOpenChange={setMenuOpen}
                 items={assignableRoles.map((r) => {
                   const holds = heldRoles.includes(r.id);
-                  return { key: r.id, label: r.name, checked: holds, onSelect: () => admin.onToggleRole!(member.serverUserId, r.id, !holds) };
+                  return { key: r.id, label: r.name, checked: holds, onSelect: () => admin.onToggleRole?.(member.serverUserId, r.id, !holds) };
                 })}
               />
             )}
@@ -383,7 +450,7 @@ export function MemberIdentityCard({
                 aria-label={member.isServerMuted ? "Remove server mute" : "Server mute"}
                 aria-pressed={!!member.isServerMuted}
                 data-tip={member.isServerMuted ? "Remove server mute" : "Server mute"}
-                onClick={() => admin.onServerMuteUser!(member.serverUserId, !member.isServerMuted)}
+                onClick={() => admin.onServerMuteUser?.(member.serverUserId, !member.isServerMuted)}
               >
                 <CardIcon.mic />
               </button>
@@ -395,24 +462,24 @@ export function MemberIdentityCard({
                 aria-label={member.isServerDeafened ? "Remove server deafen" : "Server deafen"}
                 aria-pressed={!!member.isServerDeafened}
                 data-tip={member.isServerDeafened ? "Remove server deafen" : "Server deafen"}
-                onClick={() => admin.onServerDeafenUser!(member.serverUserId, !member.isServerDeafened)}
+                onClick={() => admin.onServerDeafenUser?.(member.serverUserId, !member.isServerDeafened)}
               >
                 <CardIcon.deaf />
               </button>
             )}
             {canDisconnect && (
-              <button type="button" className="gmc-ib" aria-label="Disconnect from voice" data-tip="Disconnect from voice" onClick={() => admin.onDisconnectUser!(member.serverUserId)}>
+              <button type="button" className="gmc-ib" aria-label="Disconnect from voice" data-tip="Disconnect from voice" onClick={() => admin.onDisconnectUser?.(member.serverUserId)}>
                 <CardIcon.disc />
               </button>
             )}
             <span className="sp" />
             {canKick && (
-              <button type="button" className="gmc-ib danger" aria-label="Kick from server" data-tip="Kick from server" onClick={() => admin.onKickUser!(member.serverUserId)}>
+              <button type="button" className="gmc-ib danger" aria-label="Kick from server" data-tip="Kick from server" onClick={() => admin.onKickUser?.(member.serverUserId)}>
                 <CardIcon.kick />
               </button>
             )}
             {canBan && (
-              <button type="button" className="gmc-ib danger" aria-label="Ban from server" data-tip="Ban from server" onClick={() => admin.onBanUser!(member.serverUserId)}>
+              <button type="button" className="gmc-ib danger" aria-label="Ban from server" data-tip="Ban from server" onClick={() => admin.onBanUser?.(member.serverUserId)}>
                 <CardIcon.ban />
               </button>
             )}
@@ -473,19 +540,55 @@ export function MemberIdentityCard({
               That happens when somebody restores their identity on another device. It is also what a server
               substituting a key looks like. Ask them somewhere other than here before treating messages as private.
             </span>
-            {newCode && (
+            {newCode && !notThem && (
               <>
                 <span className="gmc-note">Ask them to read you the code on their side, somewhere other than Gryt.</span>
                 <code className="gmc-code" style={{ textAlign: "center", letterSpacing: ".06em" }}>{newCode}</code>
                 <button type="button" className="gmc-btn" data-gryt="trust-new-key" onClick={trustNewKey}>
                   The codes match, trust it
                 </button>
+                <button type="button" className="gmc-btn" data-gryt="not-them" onClick={() => answerNotThem(true)}>
+                  It&rsquo;s not them
+                </button>
               </>
+            )}
+            {notThem && (
+              <span className="gmc-note">
+                You said this isn&rsquo;t them. Messages to them stay paused.{" "}
+                <button type="button" className="cursor-pointer appearance-none border-0 bg-transparent p-0 text-inherit underline" onClick={() => answerNotThem(false)}>
+                  Check again
+                </button>
+              </span>
+            )}
+          </div>
+        )}
+        {keyState?.decision.kind !== "changed" && trustedPin && (
+          <div className="gmc-note" style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+            <span>
+              You trusted their new key.{" "}
+              <button type="button" className="cursor-pointer appearance-none border-0 bg-transparent p-0 text-inherit underline" data-gryt="undo-trust" onClick={undoTrust}>
+                Undo
+              </button>
+            </span>
+            {dmWithThem && mlsSource && sharing !== "sent" && (
+              <span>
+                A new key usually means their old messages are gone.{" "}
+                <button
+                  type="button"
+                  className="cursor-pointer appearance-none border-0 bg-transparent p-0 text-inherit underline"
+                  data-gryt="send-our-copy"
+                  disabled={sharing === "sending"}
+                  onClick={() => void sendOurCopy()}
+                >
+                  {sharing === "sending" ? "Sending\u2026" : "Send them your copy of your conversation"}
+                </button>
+              </span>
             )}
           </div>
         )}
         {(code || (!identityIsTheQuestion && fingerprint)) && (
           <details
+            ref={verifyRef}
             className="gmc-who gmc-sub"
             open={verifyOpen}
             onToggle={(e) => setVerifyOpen((e.currentTarget as HTMLDetailsElement).open)}

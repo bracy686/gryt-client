@@ -1,14 +1,17 @@
-import type { DmSealingMode, MlsDmContent, MlsOwnDevice, MlsServerCapability } from "@gryt/core";
+import type { DmSealingMode, MlsDmContent, MlsDmDiagnostics, MlsOwnDevice, MlsServerCapability } from "@gryt/core";
 import { useSyncExternalStore } from "react";
 import type { Socket } from "socket.io-client";
 
 import {
   claimMlsWorker,
+  dmKeyBindingFor,
   getLocalArchiveSnapshot,
   getOwnServerUserId,
   getServerAccessToken,
+  getUploadsFileUrl,
   getValidIdentityToken,
   identityScopeFor,
+  keyHandoverFor,
   type LocalArchive,
   localPeerPinStore,
   type MlsWorkerClaim,
@@ -20,8 +23,10 @@ import {
 } from "@/common";
 
 import { showLinkedDeviceToast } from "../components/linkedDeviceToast";
+import { publishDmKey } from "../utils/dmKeys";
 import { readMlsCapability, readMlsReports } from "./capability";
 import { thisDeviceCertificateName } from "./deviceName";
+import { handoverCode, type HandoverRequest, handoverRequests, keyResets, ownHandover } from "./keyHandover";
 import { expectOwnDevice, noteOwnDevices } from "./linkedDevices";
 import { createModeOnlySource } from "./modeOnly";
 import { publishPersonKey } from "./publishPersonKey";
@@ -41,7 +46,8 @@ import {
  */
 
 /** What a DM view needs, whether the driver is in this tab or another one. */
-export type MlsSource = Pick<MlsSession, "storeScope" | "modeFor" | "send" | "problems" | "waiting" | "onChange">;
+export type MlsSource = Pick<MlsSession, "storeScope" | "modeFor" | "send" | "problems" | "waiting" | "onChange"> &
+  Partial<Pick<MlsSession, "requestAdd">>;
 
 /** How long to wait for the member list's pins before starting anyway. */
 const MEMBERS_WAIT_MS = 5000;
@@ -65,6 +71,8 @@ interface HostState {
   retiring: Promise<void>;
   /** The server removed this device, and nobody has signed in since (GRYT-1555). */
   removed: boolean;
+  /** Your account's key here isn't this device's (GRYT-1868). It links instead of registering. */
+  otherIdentity: boolean;
 }
 
 const hosts = new Map<string, HostState>();
@@ -224,6 +232,7 @@ export function attachServerMls(socket: Socket, host: string): void {
     sessionKey: null,
     retiring: previous ? retire(previous) : Promise.resolve(),
     removed: false,
+    otherIdentity: false,
   };
   hosts.set(host, state);
 
@@ -237,6 +246,20 @@ export function attachServerMls(socket: Socket, host: string): void {
   socket.on("disconnect", () => {
     state.ready = false;
     state.pinned = deferred();
+  });
+  socket.on("dm:key:handover:asked", (asked: { binding?: string; deviceName?: string; askerId?: string }) => {
+    const accountBinding = accountBindings.get(host);
+    if (typeof asked?.binding !== "string" || typeof asked.askerId !== "string" || !accountBinding || keyMatches.get(host) !== true) return;
+    const { binding, askerId } = asked;
+    void handoverCode(host, accountBinding, binding).then((code) =>
+      handoverRequests.set([...handoverRequests.get(), { host, binding, askerId, code, deviceName: asked.deviceName || "A new device" }]),
+    ).catch(() => {});
+  });
+  // Sent to every device on the account since GRYT-2023, so only the one whose key was asked for acts.
+  socket.on("dm:key:handover:denied", (denied?: { binding?: string }) => {
+    const mine = ownHandover.get()[host];
+    if (!mine || (denied?.binding && denied.binding !== mine.binding)) return;
+    ownHandover.set({ ...ownHandover.get(), [host]: { ...mine, denied: true } });
   });
 
   claim ??= claimMlsWorker({
@@ -254,6 +277,141 @@ export function serverMlsReady(host: string): void {
   if (!state || state.ready) return;
   state.ready = true;
   void refresh(host);
+}
+
+/* Servers where this device has its own key and never registered (GRYT-1874): it waits to be
+   approved from another device, and the app asks once rather than in every DM. */
+let awaitingApproval: ReadonlySet<string> = new Set();
+const approvalListeners = new Set<() => void>();
+function setAwaitingApproval(host: string, waiting: boolean): void {
+  if (awaitingApproval.has(host) === waiting) return;
+  const next = new Set(awaitingApproval);
+  if (waiting) next.add(host);
+  else next.delete(host);
+  awaitingApproval = next;
+  for (const listener of approvalListeners) listener();
+}
+
+/** Opens the approve-or-reset dialog for this server, which is how its key changes since GRYT-1886. */
+export function askToApproveHere(host: string): void {
+  setAwaitingApproval(host, true);
+  window.dispatchEvent(new Event("gryt:approve-device-open"));
+}
+
+export function useHostsAwaitingApproval(): ReadonlySet<string> {
+  return useSyncExternalStore(
+    (listener) => {
+      approvalListeners.add(listener);
+      return () => approvalListeners.delete(listener);
+    },
+    () => awaitingApproval,
+  );
+}
+
+/** Whether your account's published key here is another device's, from the member list. */
+export function serverMlsOwnKey(host: string, rewritten: boolean, accountBinding: string | null = null, resetAt: number | null = null): void {
+  const state = hosts.get(host);
+  if (!state) return;
+  // Holding the account's key here now: requests made while this device was away come next.
+  if (!rewritten && keyMatches.get(host) !== true) state.socket.emit("dm:key:handover:pending", {});
+  keyMatches.set(host, !rewritten);
+  if (accountBinding) accountBindings.set(host, accountBinding);
+  noteKeyReset(host, resetAt, !rewritten);
+  // A server that agrees with this key can come in after the one waiting for approval.
+  if (!rewritten) for (const waiting of awaitingApproval) void askHandoverOnce(waiting, hosts.get(waiting) ?? state);
+  if (state.otherIdentity === rewritten) return;
+  state.otherIdentity = rewritten;
+  if (!rewritten) setAwaitingApproval(host, false);
+  void refresh(host);
+}
+
+/** "Use this device's key instead": your account takes this device's key here, and contacts see it change. */
+export async function adoptThisDevicesKey(host: string): Promise<boolean> {
+  const state = hosts.get(host);
+  if (!state || !(await publishDmKey(state.socket, host, { replace: true }))) return false;
+  state.otherIdentity = false;
+  void refresh(host);
+  return true;
+}
+
+/* Per server: whether the account's key there is this device's, and what that key is. */
+const keyMatches = new Map<string, boolean>();
+const accountBindings = new Map<string, string>();
+const askedHandover = new Set<string>();
+
+/**
+ * Asked only when this key is already the account's on another server: then this server should
+ * follow the others. A brand-new device links instead, and takes the account's key.
+ */
+async function askHandoverOnce(host: string, state: HostState): Promise<void> {
+  const matchesElsewhere = [...keyMatches].some(([other, ok]) => other !== host && ok);
+  const accountBinding = accountBindings.get(host);
+  if (!matchesElsewhere || !accountBinding || askedHandover.has(host)) return;
+  const binding = await dmKeyBindingFor(host);
+  if (!binding) return;
+  askedHandover.add(host);
+  const code = await handoverCode(host, accountBinding, binding).catch(() => "");
+  ownHandover.set({ ...ownHandover.get(), [host]: { binding, code, denied: false } });
+  state.socket.emit("dm:key:handover:ask", { binding, deviceName: thisDeviceCertificateName() }, (reply?: { ok?: boolean; at?: number; holder?: string | null; seenAt?: number | null }) => {
+    if (!reply?.ok) return;
+    ownHandover.set({ ...ownHandover.get(), [host]: { binding, code, denied: false, holder: reply.holder, seenAt: reply.seenAt, at: reply.at } });
+    // The device with the current key hasn't been here for 30 days: nobody is left to say no.
+    if (reply.at !== undefined && reply.at <= Date.now()) void adoptThisDevicesKey(host);
+  });
+}
+
+/** "Yes, that's my device": this device's key signs the server over to the one that asked. */
+export async function approveHandover(request: HandoverRequest): Promise<boolean> {
+  const state = hosts.get(request.host);
+  if (!state) return false;
+  const handover = await keyHandoverFor(request.host, request.binding);
+  const ok = await new Promise<boolean>((resolve) =>
+    state.socket.emit("dm:key:publish", { binding: request.binding, replace: true, handover }, (reply: { ok?: boolean }) => resolve(reply?.ok === true)),
+  );
+  if (ok) handoverRequests.set(handoverRequests.get().filter((r) => r !== request));
+  return ok;
+}
+
+/** Closing the window only drops it here; "No" also stops the ask from finishing by itself. */
+export function denyHandover(request: HandoverRequest, { stop = false }: { stop?: boolean } = {}): void {
+  hosts.get(request.host)?.socket.emit("dm:key:handover:deny", { askerId: request.askerId });
+  handoverRequests.set(handoverRequests.get().filter((r) => r !== request));
+  if (stop) void cancelKeyReset(request.host);
+}
+
+/**
+ * A pending reset (GRYT-1886). The device holding the current key is asked "was this you?"; the
+ * one that asked takes over by itself once the 30 days are up.
+ */
+function noteKeyReset(host: string, at: number | null, holdsCurrentKey: boolean): void {
+  const current = keyResets.get();
+  if (at === null) {
+    if (current[host]) keyResets.set(Object.fromEntries(Object.entries(current).filter(([h]) => h !== host)));
+    return;
+  }
+  if (current[host]?.at !== at) keyResets.set({ ...current, [host]: { at, holdsCurrentKey } });
+  if (!holdsCurrentKey && at <= Date.now()) void adoptThisDevicesKey(host);
+}
+
+/** No device and no words: this device's key takes over here in 30 days, unless one of yours stops it. */
+export async function requestKeyReset(host: string): Promise<number | null> {
+  const state = hosts.get(host);
+  const binding = await dmKeyBindingFor(host);
+  if (!state || !binding) return null;
+  return new Promise((resolve) =>
+    state.socket.emit("dm:key:reset:request", { binding }, (reply: { ok?: boolean; at?: number }) => resolve(reply?.ok ? reply.at ?? null : null)),
+  );
+}
+
+/** "That wasn't me": proven by this device's key handing over to itself. */
+export async function cancelKeyReset(host: string): Promise<boolean> {
+  const state = hosts.get(host);
+  const current = accountBindings.get(host);
+  if (!state || !current) return false;
+  const proof = await keyHandoverFor(host, current);
+  return new Promise((resolve) =>
+    state.socket.emit("dm:key:reset:cancel", { proof }, (reply: { ok?: boolean }) => resolve(reply?.ok === true)),
+  );
 }
 
 /** The member list's person keys are pinned. A Welcome from somebody unpinned is thrown away. */
@@ -303,12 +461,19 @@ async function refresh(host: string): Promise<void> {
         return;
       }
       state.session = createMlsSession({
+        // socket.io's generic on/off don't fit SessionSocket's plain signature.
+        // eslint-disable-next-line no-restricted-syntax
         socket: state.socket as unknown as SessionSocket,
         storeScope: scope,
         dmScope: scope,
         serverUserId,
         capability,
         getAccessToken: async () => getServerAccessToken(host),
+        fetchUpload: async (fileId) => {
+          const resp = await fetch(getUploadsFileUrl(host, fileId), { credentials: "omit" });
+          if (!resp.ok) throw new Error(`Upload fetch failed (${resp.status})`);
+          return new Uint8Array(await resp.arrayBuffer());
+        },
         messages: archive.messages,
         store: archive.mlsState(scope, claim),
         pinStore: localPeerPinStore,
@@ -335,11 +500,27 @@ async function refresh(host: string): Promise<void> {
     const accessToken = getServerAccessToken(host);
     if (!session?.capability || !accessToken) return;
     state.socket.emit("dm:list", { accessToken });
-    await publishPersonKey(state.socket, accessToken, await personKeyBindingFor(host));
-    // Never holds up the start: a device left behind is tried again on the next connect.
-    await retireOldDevices(session).catch((e: unknown) => console.warn("[MLS] Retiring old devices failed:", e));
     await Promise.race([state.pinned.promise, new Promise((r) => setTimeout(r, MEMBERS_WAIT_MS))]);
     if (state.session !== session) return;
+    if (state.otherIdentity) {
+      // Registered before this rule: it keeps the DMs it's in. Never registered: it waits to be linked.
+      const registered = (await session.ownDeviceId()) !== null;
+      state.local = otherIdentitySource(session, registered);
+      setSource(host, state.local);
+      setAwaitingApproval(host, !registered);
+      if (!registered) {
+        void askHandoverOnce(host, state);
+        return;
+      }
+    } else {
+      if (state.local !== session) {
+        state.local = session;
+        setSource(host, session);
+      }
+      await publishPersonKey(state.socket, accessToken, await personKeyBindingFor(host));
+    }
+    // Never holds up the start: a device left behind is tried again on the next connect.
+    await retireOldDevices(session).catch((e: unknown) => console.warn("[MLS] Retiring old devices failed:", e));
     await session.start();
     const deviceId = await session.ownDeviceId();
     if (deviceId && state.session === session) announceDevice(host, deviceId);
@@ -362,6 +543,29 @@ async function stillRemovedHere(scope: string, archive: LocalArchive): Promise<b
   }
   await archive.wipeServer(scope);
   return true;
+}
+
+/** A device with its own key: says so on every DM, and sends nothing new on MLS unless it was already in. */
+function otherIdentitySource(base: MlsSession, registered: boolean): MlsSource {
+  const refused: DmSealingMode = { kind: "refused", reason: "no_own_device" };
+  return {
+    storeScope: base.storeScope,
+    modeFor: registered
+      ? (conversationId, peer) => base.modeFor(conversationId, peer)
+      : async (conversationId, peer) => {
+          const mode = await base.modeFor(conversationId, peer).catch(() => refused);
+          return mode.kind === "sealed-v1" ? mode : refused;
+        },
+    send: registered
+      ? (conversationId, peer, content) => base.send(conversationId, peer, content)
+      : () => Promise.reject(Object.assign(new Error("This device has its own key here. Link it first."), { code: "other_identity" })),
+    problems: (conversationId) => {
+      const problems = base.problems(conversationId);
+      return problems.lost ? problems : { ...problems, lost: "other_identity" };
+    },
+    waiting: () => base.waiting(),
+    onChange: (listener) => base.onChange(listener),
+  };
 }
 
 /** DMs on a server that removed this device: version 1 to a peer without MLS, and nothing else. */
@@ -456,12 +660,21 @@ export async function removeOwnMlsDevice(host: string, deviceId: string): Promis
   await askRelay({ host, op: "remove", deviceId });
 }
 
+const diagnoseHere = (host: string, conversationId: string) =>
+  hosts.get(host)?.session?.diagnose(conversationId) ?? Promise.resolve(null);
+
+/** One DM as the tab running its driver sees it, for support (GRYT-1864). Null when no tab has it. */
+export async function mlsDmDiagnostics(host: string, conversationId: string): Promise<MlsDmDiagnostics | null> {
+  if (!askOtherTab()) return diagnoseHere(host, conversationId);
+  return (await askRelay({ host, op: "diagnose", conversationId })).diagnostics ?? null;
+}
+
 // ── Other tabs ask the one holding the lock ─────────────────────────────
 
 type RelayRequest = {
   id: string;
   host: string;
-  op: "mode" | "send" | "devices" | "remove";
+  op: "mode" | "send" | "devices" | "remove" | "diagnose";
   conversationId?: string;
   peer?: string;
   content?: MlsDmContent;
@@ -472,6 +685,7 @@ type RelayReply = {
   mode?: DmSealingMode;
   problems?: ConversationProblems;
   devices?: OwnDevicesAnswer;
+  diagnostics?: MlsDmDiagnostics | null;
   error?: { code?: string; message: string };
 };
 type RelayChanged = { changed: string; conversationId: string | null };
@@ -490,6 +704,9 @@ function listenForRelay(): void {
       answer({ error: { code: (e as { code?: string })?.code, message: e instanceof Error ? e.message : String(e) } });
     if (req.op === "devices") return void ownDevicesHere(req.host).then((devices) => answer({ devices }), fail);
     if (req.op === "remove") return void removeHere(req.host, req.deviceId ?? "").then(() => answer({}), fail);
+    if (req.op === "diagnose") {
+      return void diagnoseHere(req.host, req.conversationId ?? "").then((diagnostics) => answer({ diagnostics }), fail);
+    }
     const source = hosts.get(req.host)?.local;
     if (!source) return answer({ error: { message: "This server isn't connected in the other tab." } });
     const conversationId = req.conversationId ?? "";
@@ -512,14 +729,14 @@ function askRelay(req: Omit<RelayRequest, "id">): Promise<RelayReply> {
     const timer = setTimeout(() => done(new Error("The tab sending encrypted messages didn't answer.")), wait);
     const onReply = (event: MessageEvent<RelayReply>) => {
       if (event.data?.id !== id) return;
-      if (!event.data.error) return done(null, event.data);
+      if (!event.data.error) return done(event.data);
       done(Object.assign(new Error(event.data.error.message), { code: event.data.error.code }));
     };
-    const done = (error: Error | null, reply?: RelayReply) => {
+    const done = (result: Error | RelayReply) => {
       clearTimeout(timer);
       relayChannel.removeEventListener("message", onReply);
-      if (error) reject(error);
-      else resolve(reply!);
+      if (result instanceof Error) reject(result);
+      else resolve(result);
     };
     relayChannel.addEventListener("message", onReply);
     relayChannel.postMessage({ id, ...req });
@@ -535,7 +752,8 @@ function relaySource(host: string): MlsSource {
     async modeFor(conversationId, peer) {
       const reply = await ask({ op: "mode", conversationId, peer });
       problems.set(conversationId, reply.problems ?? NO_PROBLEMS);
-      return reply.mode!;
+      if (!reply.mode) throw new Error("The tab sending encrypted messages answered without a mode.");
+      return reply.mode;
     },
     send: async (conversationId, peer, content) => void (await ask({ op: "send", conversationId, peer, content })),
     problems: (conversationId) => problems.get(conversationId) ?? NO_PROBLEMS,

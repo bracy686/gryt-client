@@ -26,10 +26,13 @@ jobs:
       - run: yarn test:update-supersede
       - run: yarn test:update-in-progress
       - run: yarn test:dm-destination
+      - run: yarn test:stream-quality
+      - run: yarn test:doctor-sfu
       - run: yarn test:narrow-dm-parity
       - run: yarn test:unread-split
       - run: yarn test:search-snippet
       - run: yarn test:lan-server-memory
+      - run: yarn test:sound-presets
       - run: yarn test:lan-discovery
       - run: yarn test:voice-presence
       # A call whose server is removed while it is reconnecting used to be
@@ -51,23 +54,25 @@ jobs:
       # Hiding never leaves the device, so nothing else would notice it breaking.
       - run: yarn test:hidden-conversations
       - run: yarn test:new-message
+      # One notice, not three: two blocks shared a condition and the placeholder repeated it.
+      - run: yarn test:voice-text-notice
+      - run: yarn test:voice-preset
+      - run: yarn test:main-identity
+      - run: yarn test:voice-helper-lines
       - run: yarn test:desktop-away
       - run: yarn test:server-hover-address
       - run: yarn test:server-voice-line
+      # A camera pick did not stick: the engine reports its fallback before the stored
+      # settings have been read, and it was written over the choice.
+      - run: yarn test:device-adoption
       - run: yarn test:ui-scale
       - run: yarn test:peer-in-clear
       - run: yarn test:ai-toolkit
       - run: yarn test:empty-dm-copy
-      - run: yarn test:identity-vault
       - run: yarn test:identity-restart
       - run: yarn test:identity-certificate
       - run: yarn test:message-vault
-      - run: yarn test:message-vault-upgrade
-      - run: yarn test:message-vault-reseal
-      - run: yarn test:vault-upgrade-prompt
       - run: yarn test:account-words
-      - run: yarn test:message-key
-      - run: yarn test:message-key-offer
       - run: yarn test:reset-warning
       - run: yarn test:guest-history
       - run: yarn test:identity-claim
@@ -137,10 +142,11 @@ jobs:
       - run: yarn test:capture-health
       - run: yarn test:screen-audio-state
       - run: yarn test:screen-share-priority
+      - run: yarn test:screen-items
       - run: yarn test:drawn-video-size
       # What the video debug overlay reads out of getStats. Chromium names an outbound track only
       # on its media-source entry, and nothing else here reads the overlay's numbers.
-      - run: node scripts/check-video-debug-stats.mjs
+      - run: node scripts/check-video-debug-stats.ts
       - run: yarn test:avatar-precedence
       - run: yarn test:mention-tracker
       - run: yarn test:unread-tracker
@@ -153,6 +159,7 @@ jobs:
       # Save As on an encrypted file used the server copy, which is ciphertext.
       - run: yarn test:sealed-save
       - run: yarn test:local-archive
+      - run: yarn test:discord-import
       - run: yarn test:mls-dm
       - run: yarn test:mls-restart
       - run: yarn test:clear-local-history
@@ -190,6 +197,7 @@ jobs:
       # Games talk to Gryt over Discord's Rich Presence socket. Whoever else holds it
       # is named without connecting, since Discord takes a connection for a game.
       - run: yarn test:discord-ipc
+      - run: yarn test:discord-file
       - run: yarn test:rich-presence
       - run: yarn test:game-detect
       - run: yarn test:now-playing
@@ -223,6 +231,8 @@ jobs:
       - run: yarn test:examples
       - run: yarn test:fake-participants
       - run: yarn test:narrow-layout
+      - run: yarn test:bento-layout
+      - run: yarn test:voice-grip
       - run: yarn test:permission-grid
       - run: yarn test:channel-answer
       - run: yarn test:call-controls
@@ -252,12 +262,27 @@ jobs:
       # No comment runs past two lines. The script carries the list of paths
       # still to be swept, and that list only ever shrinks.
       - run: yarn test:comment-length
+      - run: yarn test:script-paths
       - run: yarn test:window-buttons
       - run: yarn test:scan-consent
       - run: yarn test:role-pills
       # tsc -b and eslint with --max-warnings 0. client#115 merged with three
       # TS6133 errors and main did not compile until the next PR.
       - run: yarn lint
+      # The TypeScript scripts, which tsc -b doesn't reach. Every script moves here (GRYT-1800).
+      - run: npx tsc -p scripts
+
+      # Code here is TypeScript so its types get checked (GRYT-1800). A file that has to stay
+      # JavaScript goes in .js-allowlist, one path a line, with a # comment saying why.
+      - name: No new JavaScript
+        run: |
+          allowed=$(grep -v '^#' .js-allowlist 2>/dev/null || true)
+          found=$(git ls-files '*.js' '*.mjs' '*.cjs' '*.jsx' | grep -vxF -e "$allowed" -e '' || true)
+          if [ -n "$found" ]; then
+            echo "::error::JavaScript not on .js-allowlist. Write it in TypeScript (GRYT-1800):"
+            echo "$found"
+            exit 1
+          fi
       # lint already runs tsc, so this is really vite build — it catches an import
       # that resolves for TypeScript and not for the bundler.
       - run: yarn build
@@ -292,7 +317,7 @@ jobs:
         working-directory: helper
     steps:
       - uses: actions/checkout@v4
-      # Kept in step with GO_TOOLCHAIN in scripts/build-helper.mjs. On macos-latest, dyld aborts Go 1.22 test binaries (missing LC_UUID).
+      # Kept in step with GO_TOOLCHAIN in scripts/build-helper.ts. On macos-latest, dyld aborts Go 1.22 test binaries (missing LC_UUID).
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"
@@ -302,6 +327,53 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -count=1 ./...
+
+  # verify runs the check scripts on ubuntu only, so twenty of them were failing on a
+  # Windows checkout with nothing anywhere to notice. Globbed, because a second list drifts.
+  checks-windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      # The .gitattributes is what makes this hold. Thirteen scripts match on a literal
+      # "\n", so a CRLF working tree fails them and nothing else here would catch it.
+      - name: Line endings are LF
+        run: |
+          crlf=$(git ls-files --eol scripts electron src | grep -E 'w/(crlf|mixed)' || true)
+          if [ -n "$crlf" ]; then
+            echo "::error::the working tree is not LF, so the check scripts will fail:"
+            echo "$crlf" | head -20
+            exit 1
+          fi
+      - name: Every check script
+        run: |
+          failed=()
+          for file in scripts/check-*.ts; do
+            if node "$file" > "$RUNNER_TEMP/check.log" 2>&1; then
+              echo "ok    $file"
+            else
+              failed+=("$file")
+              echo "::group::FAIL  $file"
+              cat "$RUNNER_TEMP/check.log"
+              echo "::endgroup::"
+            fi
+          done
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "::error::${#failed[@]} check scripts failed on Windows"
+            printf '  %s\n' "${failed[@]}"
+            exit 1
+          fi
+          echo "all check scripts pass on Windows"
 
   # Whether a pull request can change what the web client does. A skipped job still
   # reports, so a required check doesn't wait on it. Pushes to main always run.
@@ -332,7 +404,7 @@ jobs:
               "") continue ;;
               src/*|public/*|e2e/*|package.json|yarn.lock|vite.config.ts|index.html|.github/workflows/ci.yml) hit=web ;;
               electron/*) hit=$electron ;;
-              docs/*|*.md|build/*|appimagehub/*|electron-builder.yml|electron-builder.config.cjs|scripts/check-*.mjs) hit=skip ;;
+              docs/*|*.md|build/*|appimagehub/*|electron-builder.yml|electron-builder.config.ts|scripts/check-*.mjs) hit=skip ;;
               *) hit=web ;;
             esac
             echo "$hit  $file"
@@ -402,15 +474,19 @@ jobs:
           node-version: 24
           cache: yarn
       - run: yarn install --frozen-lockfile
+      # The report is a convenience. Only the shards' result below decides this job.
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           pattern: blob-report-*
           path: e2e/all-blob-reports
           merge-multiple: true
       - run: yarn playwright merge-reports --reporter=html e2e/all-blob-reports
+        continue-on-error: true
         env:
           PLAYWRIGHT_HTML_REPORT: e2e/playwright-report
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: e2e-report
           path: e2e/playwright-report

@@ -17,11 +17,19 @@ import {
   PiShieldCheckFill,
 } from "../../../../lib/icons";
 
+function aheadLine(count: number, capped: boolean, latest: string): string {
+  if (count === 0) return `The newest is ${latest}`;
+  if (capped) return `The newest ${count} releases, up to ${latest}`;
+  return `${count} newer ${count === 1 ? "release" : "releases"}, up to ${latest}`;
+}
+
 export interface WhatsNewChange {
   kind: string;
   /** The part of Gryt it touches. Releases before 1.11.0, and older sites, have none. */
   area?: string;
   text: string;
+  /** Credit for whoever found or asked for it, under the change in italics. */
+  thanks?: string;
 }
 
 /** Set when the releases are ones a server has not updated to yet (GRYT-1413). */
@@ -159,6 +167,7 @@ function ChangeRows({ changes }: { changes: WhatsNewChange[] }) {
             {LABELS[change.kind] ?? change.kind}
           </Chip>
           <p>{change.text}</p>
+          {change.thanks && <p className="whats-new-thanks">{change.thanks}</p>}
         </li>
       ))}
     </ul>
@@ -230,7 +239,7 @@ function ReleasePicture({ releases }: { releases: WhatsNewRelease[] }) {
 
 /**
  * One release: its line, then its security fixes in a block of their own, then the
- * rest under a heading per area. Changes that all share an area get no heading.
+ * rest under a heading per area. Only a release with no areas at all goes without.
  */
 function ReleaseBody({
   line,
@@ -260,10 +269,12 @@ function ReleaseBody({
 
   return (
     <div className="whats-new-body">
-      <p className="whats-new-line">
-        {line}
-        <PostLink post={post} />
-      </p>
+      {line && (
+        <p className="whats-new-line">
+          {line}
+          <PostLink post={post} />
+        </p>
+      )}
       {security.length > 0 && (
         <AreaBlock
           changes={security}
@@ -273,7 +284,7 @@ function ReleaseBody({
           label="Security"
         />
       )}
-      {areas.length === 1 ? (
+      {areas.length === 1 && areas[0].area === "" ? (
         <ChangeRows changes={areas[0].changes} />
       ) : (
         areas.map((group) => (
@@ -314,11 +325,7 @@ function AheadBody({
         <span>
           <Dialog.Title className="whats-new-greet">This server runs {ahead.running}</Dialog.Title>
           <p className="whats-new-meta">
-            {count === 0
-              ? `The newest is ${ahead.latest}`
-              : capped
-                ? `The newest ${count} releases, up to ${ahead.latest}`
-                : `${count} newer ${count === 1 ? "release" : "releases"}, up to ${ahead.latest}`}
+            {aheadLine(count, capped, ahead.latest)}
           </p>
         </span>
       </div>
@@ -430,11 +437,8 @@ export function WhatsNewDialog({
                       )}
                     </Dialog.Title>
                     <p className="whats-new-meta">
-                      {!several
-                        ? `${newest.version} · ${readableDate(newest.date)}`
-                        : capped
-                          ? `The ${releases.length} newest releases`
-                          : `${releases.length} releases`}
+                      {!several && `${newest.version} · ${readableDate(newest.date)}`}
+                      {several && (capped ? `The ${releases.length} newest releases` : `${releases.length} releases`)}
                     </p>
                   </span>
                 </div>

@@ -28,14 +28,22 @@ import {
 } from "react";
 import toast from "react-hot-toast";
 
+import { getServerAccessToken } from "@/common";
 import { useSettings } from "@/settings";
 import { Controls } from "@/webRTC";
 
-import { PiArrowLineLeftFill, PiArrowLineRightFill, PiCameraSlashFill,PiChatTeardropTextFill, PiCornersInFill, PiCornersOutFill, PiMicrophoneSlashFill } from "../../../../lib/icons";
+import { PiArrowSquareOutFill, PiCameraSlashFill,PiChatTeardropTextFill, PiCornersInFill, PiCornersOutFill, PiMicrophoneSlashFill } from "../../../../lib/icons";
 import { useAloneInCall } from "../hooks/useAloneInCall";
+import { useCallBubbles } from "../hooks/useCallBubbles";
+import { useIdle } from "../hooks/useIdle";
 import type { PeerLatencyStats } from "../hooks/usePeerLatency";
 import { usePopoutStreams } from "../hooks/usePopoutStreams";
+import { useServerManagement } from "../hooks/useServerManagement";
+import { useSockets } from "../hooks/useSockets";
+import { type BentoItem, computeBentoLayout } from "../lib/bentoLayout";
 import { cameraStreamFor, hasLiveVideoTrack } from "../lib/cameraStream";
+import { heldShareGain } from "../lib/heldShareGain";
+import { parseScreenItem, screenItemId, shareCount, shareOf } from "../lib/screenItems";
 import {
   computeGridLayout,
   computeShareLayout,
@@ -51,7 +59,9 @@ import {
 } from "../lib/voiceLayout";
 import type { Client } from "../types/clients";
 import { stopWatchingShare, useWatchedShares } from "../utils/watchedShares";
+import { type BubbleAction, CallBubbles } from "./CallBubbles";
 import { FocusedVideoView } from "./FocusedVideoView";
+import { FullscreenLabel } from "./FullscreenChrome";
 import type { AdminActions, MemberInfo } from "./MemberSidebar";
 import { UserContextMenu } from "./UserContextMenu";
 import type { FocusedStreamInfo } from "./VoiceParticipantCard";
@@ -236,6 +246,7 @@ function SortableParticipant({
     // against an auto-width box instead of its grid cell.
     width: "100%",
     height: "100%",
+    position: "relative",
   };
 
   return (
@@ -248,6 +259,7 @@ function SortableParticipant({
 export const VoiceView = ({
   showVoiceView,
   voiceWidth,
+  fullWidth,
   maxWidth,
   serverHost,
   currentServerConnected,
@@ -269,11 +281,15 @@ export const VoiceView = ({
   onFocusChange,
   chatHidden,
   onToggleChat,
-  isMaximized,
-  onToggleMaximize,
+  onPopOut,
+  inPopout = false,
+  onShowChat,
+  onOpenMessage,
 }: {
   showVoiceView: boolean;
   voiceWidth: string;
+  /** The middle area's width in px. "100%" springs to this, since motion can't spring from px to a percentage. */
+  fullWidth?: number;
   maxWidth?: number;
   serverHost: string;
   currentServerConnected: string | null;
@@ -297,8 +313,14 @@ export const VoiceView = ({
   onFocusChange?: (focused: boolean) => void;
   chatHidden?: boolean;
   onToggleChat?: () => void;
-  isMaximized?: boolean;
-  onToggleMaximize?: () => void;
+  /** Moves the call into a window of its own (GRYT-1910). */
+  onPopOut?: () => void;
+  /** Drawn inside that window, which brings its own controls. */
+  inPopout?: boolean;
+  /** Swaps the full call for its channel's text chat, where the two can't share the middle. */
+  onShowChat?: () => void;
+  /** A bubble's Reply or Open in chat: the call's chat, at that message. */
+  onOpenMessage?: (messageId: string, reply: boolean) => void;
 }) => {
   const {
     showPeerLatency,
@@ -315,7 +337,13 @@ export const VoiceView = ({
   const {
     screenShareActive: localScreenActive,
     screenVideoStream: localScreenStream,
+    extraWindows: localExtraWindows,
   } = useLocalScreenShare();
+  // Your own window `index`: the first is the share's stream, later ones their own (GRYT-1905).
+  const localScreenFor = useCallback(
+    (index: number) => (index === 0 ? localScreenStream : localExtraWindows.find((w) => w.index === index)?.videoStream ?? null),
+    [localScreenStream, localExtraWindows],
+  );
 
   const {
     cameraStream: localCameraStream,
@@ -407,31 +435,33 @@ export const VoiceView = ({
 
     toast(
       (t) => (
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col gap-2">
           <span className="text-sm">
             Your microphone is not picking up any sound — others cannot hear
             you. Check the selected device, and that it is not muted.
           </span>
-          <Button tone="neutral" size="xsmall"
-            onClick={() => {
-              toast.dismiss(t.id);
-              setSettingsTab("sound-video");
-              setShowSettings(true);
-            }}
-          >
-            Open settings
-          </Button>
-          {/* Turns it off everywhere, not just this once. Sound & video has a
-              switch to put it back, because a warning you cannot get back is
-              worse than one that nags. */}
-          <Button tone="neutral" size="xsmall"
-            onClick={() => {
-              toast.dismiss(t.id);
-              setMicSilentWarningDismissed(true);
-            }}
-          >
-            Don&apos;t show again
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button tone="neutral" size="xsmall"
+              onClick={() => {
+                toast.dismiss(t.id);
+                setSettingsTab("sound-video");
+                setShowSettings(true);
+              }}
+            >
+              Open settings
+            </Button>
+            {/* Turns it off everywhere, not just this once. Sound & video has a
+                switch to put it back, because a warning you cannot get back is
+                worse than one that nags. */}
+            <Button tone="neutral" size="xsmall"
+              onClick={() => {
+                toast.dismiss(t.id);
+                setMicSilentWarningDismissed(true);
+              }}
+            >
+              Don&apos;t show again
+            </Button>
+          </div>
         </div>
       ),
       {
@@ -504,6 +534,22 @@ export const VoiceView = ({
     return () => document.removeEventListener("fullscreenchange", sync);
   }, []);
 
+  // In fullscreen the label and the bar fade after three still seconds, as on the Fullscreen board.
+  const idle = useIdle(isFullscreen, panelRef);
+  const { servers } = useServerManagement();
+  const { serverDetailsList, sockets } = useSockets();
+  const callSocket = currentServerConnected === serverHost ? sockets[serverHost] : null;
+  const callBubbles = useCallBubbles(callSocket, currentChannelId);
+  const onBubbleAction = (kind: BubbleAction, messageId: string) => {
+    if (kind !== "react") {
+      onOpenMessage?.(messageId, kind === "reply");
+      return;
+    }
+    const accessToken = getServerAccessToken(serverHost);
+    if (!callSocket || !accessToken || !currentChannelId) return;
+    callSocket.emit("chat:react", { conversationId: currentChannelId, messageId, reactionSrc: "❤️", accessToken });
+  };
+
   const toggleFullscreen = useCallback(() => {
     if (document.fullscreenElement) {
       void document.exitFullscreen();
@@ -560,7 +606,7 @@ export const VoiceView = ({
 
   /** The SFU's own timeout, so the countdown is its clock rather than a copy of
       its default. Undefined against an older SFU. */
-  const { callAloneTimeoutSeconds, stillHere } = useSFU();
+  const { callAloneTimeoutSeconds, stillHere, getTransportLatency } = useSFU();
 
   const { secondsLeft, stay } = useAloneInCall({
     inACall: Boolean(isCall),
@@ -592,8 +638,10 @@ export const VoiceView = ({
         claimedVideoStreamIds.add(client.cameraStreamID);
       }
 
-      if (client.screenShareVideoStreamID) {
-        claimedVideoStreamIds.add(client.screenShareVideoStreamID);
+      // Every window, or a later one's stream would be handed out as somebody's camera.
+      for (let i = 0; i < Math.max(1, client.screenShares?.length ?? 0); i++) {
+        const shareId = shareOf(client, i).videoStreamID;
+        if (shareId) claimedVideoStreamIds.add(shareId);
       }
     }
 
@@ -657,12 +705,13 @@ export const VoiceView = ({
 
       if (isSelf && localScreenActive && localScreenStream) {
         items.push(`screen:${id}`);
+        for (const w of localExtraWindows) items.push(screenItemId(id, w.index));
       } else if (
         !isSelf &&
         client.screenShareEnabled &&
         client.screenShareVideoStreamID
       ) {
-        items.push(`screen:${id}`);
+        for (let i = 0; i < shareCount(client); i++) items.push(screenItemId(id, i));
 
         console.log(
           `[ScreenShare] gridItems: added screen:${id} (streamID=${
@@ -679,6 +728,7 @@ export const VoiceView = ({
     currentConnectionId,
     localScreenActive,
     localScreenStream,
+    localExtraWindows,
     videoStreams,
   ]);
 
@@ -691,22 +741,23 @@ export const VoiceView = ({
   /* A share you aren't watching stays silent (GRYT-1681). The volume it had is kept, so
      watching again picks up where the slider was rather than at full. */
   const watchedShares = useWatchedShares();
-  const heldShareGain = useRef(new Map<string, number>());
   useEffect(() => {
     if (!streamSources) return;
-    for (const [id, client] of Object.entries(clientsForHost)) {
-      if (id === currentConnectionId) continue;
-      const audioId = client.screenShareAudioStreamID;
+    const shares = Object.entries(clientsForHost)
+      .filter(([id]) => id !== currentConnectionId)
+      .flatMap(([, client]) => Array.from({ length: Math.max(1, client.screenShares?.length ?? 0) }, (_, i) => shareOf(client, i)));
+    for (const { videoStreamID, audioStreamID: audioId } of shares) {
       const gain = audioId ? streamSources[audioId]?.gain : undefined;
       if (!audioId || !gain) continue;
-      const watching = !!client.screenShareVideoStreamID && watchedShares.has(client.screenShareVideoStreamID);
-      const held = heldShareGain.current;
-      if (!watching && !held.has(audioId)) {
-        held.set(audioId, gain.gain.value);
+      const watching = !!videoStreamID && watchedShares.has(videoStreamID);
+      if (!watching && !heldShareGain.has(audioId)) {
+        heldShareGain.set(audioId, gain.gain.value);
         gain.gain.setValueAtTime(0, gain.context.currentTime);
-      } else if (watching && held.has(audioId)) {
-        gain.gain.setValueAtTime(held.get(audioId)!, gain.context.currentTime);
-        held.delete(audioId);
+      } else if (watching) {
+        const level = heldShareGain.get(audioId);
+        if (level === undefined) continue;
+        gain.gain.setValueAtTime(level, gain.context.currentTime);
+        heldShareGain.delete(audioId);
       }
     }
   }, [clientsForHost, currentConnectionId, streamSources, watchedShares]);
@@ -756,6 +807,8 @@ export const VoiceView = ({
   }, []);
 
   const isFocused = !!focusedStream;
+  // The corner button needs room beside the 334px bar, so preset 1 goes without; fullscreen moves it to the bar's end.
+  const cornerFullscreen = !isFullscreen && gridWidth >= 424;
 
   useLayoutEffect(() => {
     onFocusChange?.(isFocused);
@@ -800,28 +853,31 @@ export const VoiceView = ({
   /** The default, since it gives the person you are talking to more pixels.
       "equal" falls through to the ordinary grid. */
   const isHeroPip =
+    voiceTileLayout !== "bento" &&
     voiceTwoPersonLayout === "hero" &&
     !isFocused &&
     screenItems.length === 0 &&
     peopleItems.length === 2;
 
+  // The pop-out has no bar under the tiles and sits 8px from its window's edge; its toggles float on hover.
+  const gridPadding = inPopout ? 8 : GRID_PADDING;
+  const controlsHeight = inPopout ? gridPadding : CONTROLS_HEIGHT;
+  const channelName = serverDetailsList[serverHost]?.channels?.find((c) => c.id === currentChannelId)?.name ?? "Voice";
   const availableHeight = Math.max(
     0,
-    gridHeight - CONTROLS_HEIGHT - GRID_PADDING,
+    gridHeight - controlsHeight - gridPadding,
   );
-  const usableWidth = Math.max(0, gridWidth - 2 * GRID_PADDING);
+  const usableWidth = Math.max(0, gridWidth - 2 * gridPadding);
 
   // A share is fitted to its own shape, so the layout needs the stream's real
   // dimensions: a shared window is not 16:9.
   const shareAspect = useMemo(() => {
     for (const itemId of screenItems) {
-      const clientId = itemId.slice(7);
+      const { clientId, index } = parseScreenItem(itemId);
       const isSelf = clientId === currentConnectionId;
       const stream = isSelf
-        ? localScreenStream
-        : videoStreams?.[
-            clientsForHost[clientId]?.screenShareVideoStreamID ?? ""
-          ];
+        ? localScreenFor(index)
+        : videoStreams?.[shareOf(clientsForHost[clientId], index).videoStreamID];
       const settings = stream?.getVideoTracks()[0]?.getSettings();
       if (settings?.width && settings?.height)
         return settings.width / settings.height;
@@ -829,13 +885,14 @@ export const VoiceView = ({
     return 16 / 9;
   }, [
     screenItems,
+    localScreenFor,
     currentConnectionId,
-    localScreenStream,
     videoStreams,
     clientsForHost,
   ]);
 
   const shareLayout =
+    voiceTileLayout !== "bento" &&
     screenItems.length > 0 && usableWidth > 0 && availableHeight > 0
       ? computeShareLayout(usableWidth, availableHeight, shareAspect)
       : null;
@@ -869,9 +926,9 @@ export const VoiceView = ({
     prioritisedPeople.length,
   ]);
 
-  // When everyone does not fit, the last slot becomes the "+N" tile rather
-  // than a person, so the count sits inside the layout instead of over it.
-  const overflows = prioritisedPeople.length > capacity;
+  // When everyone does not fit, the last slot becomes a "+N" tile. Not in the
+  // pop-out: there everyone is laid out, as on the Popout board.
+  const overflows = !inPopout && prioritisedPeople.length > capacity;
 
   const visiblePeople = useMemo(
     () =>
@@ -926,6 +983,47 @@ export const VoiceView = ({
     return out;
   }, [gridRows, laidOutItems]);
 
+  /** Shares and people placed together. A share you don't watch has no picture yet, so it
+      takes a camera-sized tile: room for its Watch button, no more. */
+  const bentoRects = useMemo(() => {
+    if (voiceTileLayout !== "bento") return null;
+
+    const items: BentoItem[] = screenItems.map((id) => {
+      const { clientId, index } = parseScreenItem(id);
+      const shareId = shareOf(clientsForHost[clientId], index).videoStreamID;
+      const watched = clientId === currentConnectionId || (!!shareId && watchedShares.has(shareId));
+      return { id, kind: watched ? "share" : "avatar" };
+    });
+
+    for (const id of laidOutItems) {
+      const client = clientsForHost[id];
+      const stream = id === currentConnectionId
+        ? localCameraStream
+        : cameraStreamFor(client?.cameraStreamID, fallbackCameraStreamIdByClientId[id], videoStreams);
+      if (!client?.cameraEnabled || !hasLiveVideoTrack(stream)) {
+        items.push({ id, kind: "avatar" });
+        continue;
+      }
+      const settings = stream?.getVideoTracks()[0]?.getSettings();
+      const ratio = settings?.width && settings?.height ? settings.width / settings.height : undefined;
+      items.push({ id, kind: "cam", ratio });
+    }
+
+    return computeBentoLayout(items, usableWidth, availableHeight, GRID_GAP);
+  }, [
+    voiceTileLayout,
+    screenItems,
+    laidOutItems,
+    clientsForHost,
+    currentConnectionId,
+    watchedShares,
+    localCameraStream,
+    fallbackCameraStreamIdByClientId,
+    videoStreams,
+    usableWidth,
+    availableHeight,
+  ]);
+
   useEffect(() => {
     if (!focusedStream) return;
 
@@ -950,9 +1048,7 @@ export const VoiceView = ({
     if (!focusedStream) return;
 
     const isScreenTile = focusedStream.itemId.startsWith("screen:");
-    const clientId = isScreenTile
-      ? focusedStream.itemId.slice(7)
-      : focusedStream.itemId;
+    const { clientId, index: shareIndex } = parseScreenItem(focusedStream.itemId);
 
     if (clientId === currentConnectionId) return;
 
@@ -961,10 +1057,10 @@ export const VoiceView = ({
 
     const fallbackCameraStreamID = fallbackCameraStreamIdByClientId[clientId];
 
+    const share = shareOf(client, shareIndex);
+    const screenStream = share.videoStreamID ? videoStreams?.[share.videoStreamID] : undefined;
     const currentStream = isScreenTile
-      ? client.screenShareVideoStreamID
-        ? videoStreams?.[client.screenShareVideoStreamID]
-        : undefined
+      ? screenStream
       : (cameraStreamFor(
           client.cameraStreamID,
           fallbackCameraStreamID,
@@ -972,7 +1068,7 @@ export const VoiceView = ({
         ) ?? undefined);
 
     const latestAudioStreamId = isScreenTile
-      ? client.screenShareAudioStreamID || undefined
+      ? share.audioStreamID || undefined
       : focusedStream.audioStreamId;
 
     const streamChanged =
@@ -985,7 +1081,7 @@ export const VoiceView = ({
 
         return {
           ...prev,
-          ...(streamChanged ? { stream: currentStream! } : {}),
+          ...(streamChanged && currentStream ? { stream: currentStream } : {}),
           ...(audioIdChanged ? { audioStreamId: latestAudioStreamId } : {}),
         };
       });
@@ -1003,7 +1099,7 @@ export const VoiceView = ({
 
     for (const itemId of poppedOutItems) {
       const isScreenTile = itemId.startsWith("screen:");
-      const clientId = isScreenTile ? itemId.slice(7) : itemId;
+      const { clientId, index: shareIndex } = parseScreenItem(itemId);
       const isSelf = clientId === currentConnectionId;
       const client = clientsForHost[clientId];
 
@@ -1011,19 +1107,13 @@ export const VoiceView = ({
 
       const fallbackCameraStreamID = fallbackCameraStreamIdByClientId[clientId];
 
-      const currentStream = isScreenTile
-        ? isSelf
-          ? localScreenStream
-          : client.screenShareVideoStreamID
-            ? videoStreams?.[client.screenShareVideoStreamID]
-            : null
-        : isSelf
-          ? localCameraStream
-          : cameraStreamFor(
-              client.cameraStreamID,
-              fallbackCameraStreamID,
-              videoStreams,
-            );
+      const shareId = shareOf(client, shareIndex).videoStreamID;
+      const remoteScreen = shareId ? videoStreams?.[shareId] : null;
+      const screenStream = isSelf ? localScreenFor(shareIndex) : remoteScreen;
+      const cameraStream = isSelf
+        ? localCameraStream
+        : cameraStreamFor(client.cameraStreamID, fallbackCameraStreamID, videoStreams);
+      const currentStream = isScreenTile ? screenStream : cameraStream;
 
       if (currentStream) {
         updatePopoutStream(itemId, currentStream);
@@ -1031,6 +1121,7 @@ export const VoiceView = ({
     }
   }, [
     poppedOutItems,
+    localScreenFor,
     videoStreams,
     clientsForHost,
     currentConnectionId,
@@ -1053,8 +1144,8 @@ export const VoiceView = ({
 
   useEffect(() => {
     if (!focusedStream?.itemId.startsWith("screen:")) return;
-    const id = focusedStream.itemId.slice(7);
-    const shareId = clientsForHost[id]?.screenShareVideoStreamID;
+    const { clientId: id, index } = parseScreenItem(focusedStream.itemId);
+    const shareId = shareOf(clientsForHost[id], index).videoStreamID;
     if (id !== currentConnectionId && (!shareId || !watchedShares.has(shareId))) setFocusedStream(null);
   }, [focusedStream, clientsForHost, currentConnectionId, watchedShares]);
 
@@ -1071,8 +1162,17 @@ export const VoiceView = ({
     setFocusedStream(null);
   }, [focusedStream, handlePopout]);
 
+  // Read each render: useVoiceLatency's poll re-renders this once a second while the badges are on.
+  const transportLatency = showPeerLatency ? getTransportLatency?.() ?? null : null;
   const getLatencyStats = (clientId: string, isSelf: boolean) => {
     if (!showPeerLatency) return undefined;
+
+    // On the own transport a peer's badge is measured (GRYT-1836): the round trip to them through the SFU, and their buffer here.
+    const serverUserId = clientsForHost[clientId]?.serverUserId;
+    if (transportLatency && !isSelf && serverUserId) {
+      const measuredRttMs = transportLatency.rttByUser.get(serverUserId);
+      return measuredRttMs === undefined ? undefined : { measuredRttMs, bufferedMs: transportLatency.bufferedByUser.get(serverUserId) ?? null };
+    }
 
     if (isSelf) {
       return {
@@ -1132,7 +1232,7 @@ export const VoiceView = ({
     tileSize?: { width: number; height: number },
   ) => {
     const isScreenTile = itemId.startsWith("screen:");
-    const clientId = isScreenTile ? itemId.slice(7) : itemId;
+    const { clientId, index: shareIndex } = parseScreenItem(itemId);
     const client = clientsForHost[clientId];
 
     if (!client) return null;
@@ -1140,7 +1240,7 @@ export const VoiceView = ({
     const isSelf = clientId === currentConnectionId;
     const serverUserId = client?.serverUserId;
     // By person, not socket: a reconnect hands out a new socket id, and a new key remounts the video.
-    const tileKey = serverUserId ? `${isScreenTile ? "screen:" : ""}${serverUserId}` : itemId;
+    const tileKey = serverUserId ? `${isScreenTile ? screenItemId(serverUserId, shareIndex) : serverUserId}` : itemId;
 
     return (
       <motion.div
@@ -1180,7 +1280,7 @@ export const VoiceView = ({
               showPeerLatency={showPeerLatency}
               latencyStats={getLatencyStats(clientId, isSelf)}
               localCameraStream={localCameraStream}
-              localScreenStream={localScreenStream}
+              localScreenStream={localScreenFor(shareIndex)}
               videoStreams={videoStreams}
               fallbackCameraStreamID={
                 fallbackCameraStreamIdByClientId[clientId] || null
@@ -1198,11 +1298,23 @@ export const VoiceView = ({
               streamSources={streamSources}
               tileRadius={radius}
             />
+            {!isScreenTile && !isFocused && serverUserId && (
+              <CallBubbles
+                bubbles={callBubbles.bubbles[serverUserId] ?? []}
+                typing={callBubbles.typing.has(serverUserId)}
+                glass={!!client.cameraEnabled}
+                serverHost={serverHost}
+                onAction={onBubbleAction}
+              />
+            )}
           </SortableParticipant>
         </div>
       </motion.div>
     );
   };
+
+  const target = voiceWidth === "100%" && fullWidth ? fullWidth : voiceWidth;
+  const openWidth = showVoiceView ? target : 0;
 
   return (
     <motion.div
@@ -1216,12 +1328,14 @@ export const VoiceView = ({
       animate={{
         // Fullscreen sizes the element itself, so an animated pixel width
         // would fight the browser for it.
-        width: isFullscreen ? "100%" : showVoiceView ? voiceWidth : 0,
+        width: isFullscreen ? "100%" : openWidth,
         paddingRight:
-          isFullscreen || !showVoiceView || voiceWidth === "0px" ? 0 : 8,
+          // No chat beside it at 100%, so no gap to keep for one.
+          isFullscreen || !showVoiceView || voiceWidth === "0px" || voiceWidth === "100%" ? 0 : 16,
       }}
       style={{
         overflow: "hidden",
+        cursor: idle ? "none" : undefined,
         // The width comes from `voiceWidth` alone: focus used to get its own
         // branch here, so the panel ate the row the moment a tile was clicked.
         ...(isFullscreen
@@ -1232,10 +1346,33 @@ export const VoiceView = ({
             }),
       }}
     >
-      <div className="flex h-full w-full flex-col p-3" style={{
-          background: "var(--gryt-neutral-3)",
-          borderRadius: "var(--gryt-radius-lg)",
-        }}>
+      <div className={`relative flex h-full w-full flex-col ${inPopout ? "" : "p-3"}`} style={
+          isFullscreen || inPopout
+            ? { background: isFullscreen ? "var(--gryt-neutral-1)" : "transparent", borderRadius: 0 }
+            : { background: "var(--gryt-neutral-3)", borderRadius: "var(--gryt-radius-lg)" }
+        }>
+        {isFullscreen ? (
+          <FullscreenLabel
+            channelName={channelName}
+            serverName={servers[serverHost]?.name || serverHost}
+            people={visibleClients.length}
+            hidden={idle}
+          />
+        ) : !inPopout && (
+          <div className="flex h-10 shrink-0 items-baseline gap-2.5 overflow-hidden whitespace-nowrap px-2 pt-2">
+            <span className="truncate text-[17px] font-extrabold">{channelName}</span>
+            <span className="flex-1 text-[13px] text-gryt-muted">
+              {visibleClients.length} {visibleClients.length === 1 ? "person" : "people"}
+            </span>
+            {onShowChat && (
+              <Tooltip title={`${channelName}'s text chat`}>
+                <IconButton tone="neutral" size="xsmall" aria-label={`${channelName}'s text chat`} onClick={onShowChat} className="self-center">
+                  <PiChatTeardropTextFill size={16} />
+                </IconButton>
+              </Tooltip>
+            )}
+          </div>
+        )}
         {secondsLeft === null ? null : (
           <div
             aria-live="polite"
@@ -1258,7 +1395,8 @@ export const VoiceView = ({
           style={{
             flexGrow: 1,
             position: "relative",
-            overflow: "hidden",
+            // The call bar reaches 12px past this box to fit preset 1; the panel around it does the clipping.
+            overflow: "visible",
             display: "flex",
             flexDirection: "column",
           }}
@@ -1266,10 +1404,9 @@ export const VoiceView = ({
           {isFocused &&
             (() => {
               const isScreenTile = focusedStream.itemId.startsWith("screen:");
-              const focusClientId = isScreenTile
-                ? focusedStream.itemId.slice(7)
-                : focusedStream.itemId;
+              const { clientId: focusClientId, index: focusShareIndex } = parseScreenItem(focusedStream.itemId);
               const focusClient = clientsForHost[focusClientId];
+              const focusShareId = shareOf(focusClient, focusShareIndex).videoStreamID;
               const focusIsSelf = focusClientId === currentConnectionId;
               const focusServerUserId = focusClient?.serverUserId;
               const focusMember = focusServerUserId
@@ -1287,8 +1424,8 @@ export const VoiceView = ({
                   onClose={handleCloseFocus}
                   onPopout={handleFocusedPopout}
                   onStopWatching={
-                    isScreenTile && !focusIsSelf && focusClient?.screenShareVideoStreamID
-                      ? () => stopWatchingShare(focusClient.screenShareVideoStreamID!)
+                    isScreenTile && !focusIsSelf && focusShareId
+                      ? () => stopWatchingShare(focusShareId)
                       : undefined
                   }
                 />
@@ -1315,18 +1452,18 @@ export const VoiceView = ({
                   isServerDeafened={focusMember?.isServerDeafened}
                   onKick={
                     adminActions?.onKickUser && focusServerUserId
-                      ? () => adminActions.onKickUser!(focusServerUserId)
+                      ? () => adminActions.onKickUser?.(focusServerUserId)
                       : undefined
                   }
                   onBan={
                     adminActions?.onBanUser && focusServerUserId
-                      ? () => adminActions.onBanUser!(focusServerUserId)
+                      ? () => adminActions.onBanUser?.(focusServerUserId)
                       : undefined
                   }
                   onServerMute={
                     adminActions?.onServerMuteUser && focusServerUserId
                       ? (muted) =>
-                          adminActions.onServerMuteUser!(
+                          adminActions.onServerMuteUser?.(
                             focusServerUserId,
                             muted,
                           )
@@ -1335,7 +1472,7 @@ export const VoiceView = ({
                   onServerDeafen={
                     adminActions?.onServerDeafenUser && focusServerUserId
                       ? (deafened) =>
-                          adminActions.onServerDeafenUser!(
+                          adminActions.onServerDeafenUser?.(
                             focusServerUserId,
                             deafened,
                           )
@@ -1344,7 +1481,7 @@ export const VoiceView = ({
                   onToggleRole={
                     adminActions?.onToggleRole && focusServerUserId
                       ? (role, hold) =>
-                          adminActions.onToggleRole!(focusServerUserId, role, hold)
+                          adminActions.onToggleRole?.(focusServerUserId, role, hold)
                       : undefined
                   }
                   onPopoutVideo={handleFocusedPopout}
@@ -1382,19 +1519,32 @@ export const VoiceView = ({
                         gap: `${GRID_GAP}px`,
                         // The controls float over this area, so a full-height tile
                         // puts the name behind the mute button.
-                        padding: `${GRID_PADDING}px ${GRID_PADDING}px ${CONTROLS_HEIGHT}px`,
+                        padding: `${gridPadding}px ${gridPadding}px ${controlsHeight}px`,
                         height: "100%",
                         overflow: "hidden",
                       }
                 }
               >
-                {currentServerConnected !== serverHost ? null : isFocused ? (
+                {currentServerConnected === serverHost && isFocused && (
                   <AnimatePresence>
                     {displayItems.map((itemId) =>
                       renderTile(itemId, { flexShrink: 0, width: 140 }),
                     )}
                   </AnimatePresence>
-                ) : (
+                )}
+                {currentServerConnected === serverHost && !isFocused && bentoRects && (
+                  <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
+                    <AnimatePresence>
+                      {bentoRects.map((r) => {
+                        const box: CSSProperties = { position: "absolute", left: r.x, top: r.y, width: r.width, height: r.height };
+                        return r.id === OVERFLOW_ITEM_ID
+                          ? <div key={r.id} style={box}>{renderOverflowTile(r)}</div>
+                          : renderTile(r.id, box, tileRadius(Math.min(r.width, r.height)));
+                      })}
+                    </AnimatePresence>
+                  </div>
+                )}
+                {currentServerConnected === serverHost && !isFocused && !bentoRects && (
                   <>
                     {/* A share sits above the grid at sidebar proportions and
                         below the participant strip at stage proportions — the
@@ -1458,7 +1608,7 @@ export const VoiceView = ({
                       </div>
                     )}
 
-                    {isHeroPip ? (
+                    {isHeroPip && (
                       <div
                         style={{
                           position: "relative",
@@ -1501,7 +1651,8 @@ export const VoiceView = ({
                           )}
                         </AnimatePresence>
                       </div>
-                    ) : shareLayout?.orientation === "strip-above" ? null : (
+                    )}
+                    {!isHeroPip && shareLayout?.orientation !== "strip-above" && (
                       <div
                         style={{
                           // Each row has its own tile size, so a flex-wrap trick no
@@ -1551,77 +1702,63 @@ export const VoiceView = ({
             </SortableContext>
           </DndContext>
 
-          {!isFocused && (
+          {!isFocused && !inPopout && (
             <AnimatePresence>
               {currentServerConnected && (
                 <motion.div
                   style={{
                     position: "absolute",
                     bottom: 0,
-                    left: 0,
-                    right: 0,
+                    // Out over the panel's padding: at preset 1 the bar needs 334 of its 352px.
+                    left: -12,
+                    right: -12,
                     display: "flex",
+                    alignItems: "flex-end",
                     justifyContent: "center",
-                    padding: "12px",
+                    gap: 12,
+                    padding: "12px 0",
                     pointerEvents: "none",
                   }}
                   initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
+                  animate={{ opacity: idle ? 0 : 1 }}
                   exit={{ opacity: 0 }}
                 >
-                  <div style={{ pointerEvents: "auto" }}>
+                  {/* Equal spacers either side keep the bar centred; the right one holds the fullscreen button in flow, so it can't overlap. */}
+                  {cornerFullscreen && <div style={{ flex: 1 }} />}
+                  <div className="flex items-center gap-3" style={{ pointerEvents: idle ? "none" : "auto", flex: "0 1 auto", minWidth: 0 }}>
                     <Controls onDisconnect={onDisconnect} />
-                  </div>
-
-                  {onToggleMaximize && (
-                    <div className="flex gap-2" style={{
-                        position: "absolute",
-                        right: 12,
-                        bottom: 12,
-                        pointerEvents: "auto",
-                      }}>
-                      <Tooltip
-                        title={isFullscreen ? "Leave fullscreen" : "Fullscreen"}
-                      >
-                        <IconButton tone="neutral" size="xsmall"
-                          aria-label={
-                            isFullscreen
-                              ? "Leave fullscreen"
-                              : "Fullscreen voice view"
-                          }
+                    {isFullscreen && (
+                      <Tooltip title="Leave fullscreen">
+                        <button
+                          type="button"
+                          aria-label="Leave fullscreen"
                           onClick={toggleFullscreen}
+                          className="flex h-11 w-11 cursor-pointer items-center justify-center rounded-full border-0 bg-gryt-neutral-5 text-gryt-neutral-12 hover:bg-gryt-neutral-6"
                         >
-                          {isFullscreen ? (
-                            <PiCornersInFill size={18} />
-                          ) : (
-                            <PiCornersOutFill size={18} />
-                          )}
-                        </IconButton>
+                          <PiCornersInFill size={18} />
+                        </button>
                       </Tooltip>
-
-                      {/* Nothing to maximise into while the voice view already
-                          covers the screen, so the control goes rather than
-                          sitting there doing nothing. */}
-                      {!isFullscreen && (
-                        <Tooltip
-                          title={isMaximized ? "Restore" : "Maximize"}
-                        >
+                    )}
+                  </div>
+                  {cornerFullscreen && (
+                    <div className="flex justify-end" style={{ flex: 1, pointerEvents: "none", paddingRight: 12 }}>
+                      <div className="flex gap-2" style={{ pointerEvents: "auto", paddingBottom: 8 }}>
+                        {onPopOut && (
+                          <Tooltip title="Pop out">
+                            <IconButton tone="neutral" size="xsmall" aria-label="Pop the call out into its own window" onClick={onPopOut}>
+                              <PiArrowSquareOutFill size={18} />
+                            </IconButton>
+                          </Tooltip>
+                        )}
+                        <Tooltip title="Fullscreen">
                           <IconButton tone="neutral" size="xsmall"
-                            aria-label={
-                              isMaximized
-                                ? "Restore voice view"
-                                : "Maximize voice view"
-                            }
-                            onClick={onToggleMaximize}
+                            aria-label="Fullscreen voice view"
+                            onClick={toggleFullscreen}
                           >
-                            {isMaximized ? (
-                              <PiArrowLineLeftFill size={16} />
-                            ) : (
-                              <PiArrowLineRightFill size={16} />
-                            )}
+                            <PiCornersOutFill size={18} />
                           </IconButton>
                         </Tooltip>
-                      )}
+                      </div>
                     </div>
                   )}
                 </motion.div>

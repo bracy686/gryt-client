@@ -1,5 +1,8 @@
 // Scoped to the rendered result of one template slot; never applied to conditions or data keys.
 export const TEMPLATE_RULES = {
+  "{0} {1} didn’t come over. All your messages did, and those messages say a file is missing.": { 1: { file: "个文件", files: "个文件" } },
+  "Sent {0} your copy: {1} message{2}": { 2: { "": "", s: "" } },
+  "{0} {1}, go to it": { 1: { above: "在上方", below: "在下方" } },
   "It couldn't be added to {0} yet. It joins {1} the next time someone sends a message there.": {
     0: { "one conversation": "一段对话" }, 1: { "that one": "那段对话", "those": "那些对话" },
   },

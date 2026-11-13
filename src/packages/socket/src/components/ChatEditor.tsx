@@ -1,9 +1,49 @@
 import { Menu } from "@gryt/ui";
+import { $isCodeNode, CodeNode } from "@lexical/code";
+import { autoLinkEmailMatcher, AutoLinkNode, autoLinkUrlMatcher, LinkNode } from "@lexical/link";
+import { $isListItemNode, ListItemNode, ListNode } from "@lexical/list";
+import { $convertFromMarkdownString, $convertToMarkdownString } from "@lexical/markdown";
+import { AutoLinkPlugin } from "@lexical/react/LexicalAutoLinkPlugin";
+import { LexicalComposer } from "@lexical/react/LexicalComposer";
+import { ContentEditable } from "@lexical/react/LexicalContentEditable";
+import { EditorRefPlugin } from "@lexical/react/LexicalEditorRefPlugin";
+import { LexicalErrorBoundary } from "@lexical/react/LexicalErrorBoundary";
+import { HistoryPlugin } from "@lexical/react/LexicalHistoryPlugin";
+import { LinkPlugin } from "@lexical/react/LexicalLinkPlugin";
+import { ListPlugin } from "@lexical/react/LexicalListPlugin";
+import { MarkdownShortcutPlugin } from "@lexical/react/LexicalMarkdownShortcutPlugin";
+import { RichTextPlugin } from "@lexical/react/LexicalRichTextPlugin";
+import { HeadingNode, QuoteNode } from "@lexical/rich-text";
+import { $findMatchingParent, mergeRegister } from "@lexical/utils";
+import {
+  $createParagraphNode,
+  $createTextNode,
+  $getRoot,
+  $getSelection,
+  $isRangeSelection,
+  $isTextNode,
+  $setSelection,
+  BLUR_COMMAND,
+  COMMAND_PRIORITY_HIGH,
+  DROP_COMMAND,
+  FOCUS_COMMAND,
+  FORMAT_TEXT_COMMAND,
+  INDENT_CONTENT_COMMAND,
+  INSERT_PARAGRAPH_COMMAND,
+  KEY_DOWN_COMMAND,
+  KEY_ENTER_COMMAND,
+  KEY_TAB_COMMAND,
+  type LexicalEditor,
+  type LexicalNode,
+  OUTDENT_CONTENT_COMMAND,
+  PASTE_COMMAND,
+} from "lexical";
 import {
   forwardRef,
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -13,9 +53,11 @@ import { PiArrowUpBold, PiChartBarFill, PiCode, PiFileAudioFill, PiFileFill, PiF
 import { termsGate } from "../../../../lib/termsGate";
 const FaFilePdf = PiFileTextFill;
 
-import { channelHref } from "../../../lib/mentionTokens";
-import { parseEditSegments } from "../utils/chatEditorMentions";
+import { type EditorPill } from "../utils/chatEditorMentions";
 import { type EmojiEntry, getCustomEmojis, recordRecentEmoji } from "../utils/emojiData";
+import { MASS_MENTION } from "./composerButtons";
+import { ComposerFormatBar } from "./ComposerFormatBar";
+import { $createEmojiNode, $createMentionNode, $isMentionNode, composerTransformers, EmojiNode, MentionNode } from "./composerLexical";
 import { EmojiAutocomplete } from "./EmojiAutocomplete";
 import { EmojiPicker } from "./EmojiPicker";
 import { emojiQueryAt } from "./emojiQuery";
@@ -36,6 +78,28 @@ const LARGE_PASTE_FILE_NAME = "pasted-text.txt";
 /** Said instead, where the attachment would be refused. */
 const LONG_PASTE_NO_FILES =
   `That's too long to paste. Messages can be up to ${MESSAGE_MAX_LENGTH.toLocaleString("en")} characters, and you can't attach files here.`;
+
+const THEME = {
+  text: { bold: "lx-bold", italic: "lx-italic", strikethrough: "lx-strike", code: "lx-code" },
+  heading: { h1: "lx-h1", h2: "lx-h2", h3: "lx-h3" },
+  quote: "lx-quote",
+  list: { ul: "lx-ul", ol: "lx-ol", listitem: "lx-li", nested: { listitem: "lx-li-nested" } },
+  link: "gryt-link",
+  code: "lx-codeblock",
+  paragraph: "lx-p",
+};
+
+const AUTOLINK_MATCHERS = [autoLinkUrlMatcher, autoLinkEmailMatcher];
+
+const NODES = [HeadingNode, QuoteNode, ListNode, ListItemNode, LinkNode, AutoLinkNode, CodeNode, MentionNode, EmojiNode];
+
+const QUERY = { "@": /(^|[\s])@([a-zA-Z0-9_ ]*)$/, "#": /(^|[\s])#([a-zA-Z0-9_-]*)$/ } as const;
+
+/** Where to draw the drop line on a staged file: before it, or after the last one. */
+function dropMarker(dropAt: number | null, i: number, count: number): "before" | "after" | undefined {
+  if (dropAt === i) return "before";
+  return dropAt === i + 1 && i === count - 1 ? "after" : undefined;
+}
 
 export interface ChatEditorHandle {
   clear: () => void;
@@ -72,11 +136,15 @@ interface ChatEditorProps {
   onCancel?: () => void;
   onTyping?: () => void;
   onStopTyping?: () => void;
+  /** Anything in the box changed: text or files. */
+  onChange?: () => void;
   isEditing?: boolean;
   memberList?: MentionMember[];
   /** Channels a `#` offers. Only ones this member can see. */
   channelList?: MentionMember[];
   serverHost?: string;
+  /** Asked before a message with @everyone or @here goes out; it calls `send` to go ahead. */
+  confirmMassMention?: (text: string, send: () => void) => void;
 }
 
 function getFileIcon(mime: string) {
@@ -96,179 +164,64 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function serializeContentEditable(el: HTMLElement): string {
-  let result = "";
-  for (const node of el.childNodes) {
-    if (node.nodeType === Node.TEXT_NODE) {
-      result += node.textContent || "";
-    } else if (node.nodeType === Node.ELEMENT_NODE) {
-      const elem = node as HTMLElement;
-      if (elem.tagName === "IMG" && elem.dataset.emojiName) {
-        // Another server's emoji goes as its image; its name only resolves on its own server.
-        result += elem.dataset.emojiSrc ? `![:${elem.dataset.emojiName}:](${elem.dataset.emojiSrc})` : `:${elem.dataset.emojiName}:`;
-      } else if (elem.dataset.roleId) {
-        result += `[${elem.dataset.mentionName || elem.textContent || ""}](role:${elem.dataset.roleId})`;
-      } else if (elem.dataset.channelId) {
-        // Never the name: a reader who can't see the channel must not get it.
-        result += `[#channel](${channelHref(elem.dataset.channelId, elem.dataset.channelHost || null)})`;
-      } else if (elem.dataset.mentionId) {
-        const id = elem.dataset.mentionId;
-        const name = elem.dataset.mentionName || elem.textContent || "";
-        result += `[${name}](mention:${id})`;
-      } else if (elem.tagName === "BR") {
-        result += "\n";
-      } else if (elem.tagName === "DIV" || elem.tagName === "P") {
-        if (result.length > 0 && !result.endsWith("\n")) result += "\n";
-        result += serializeContentEditable(elem);
-      } else {
-        result += serializeContentEditable(elem);
-      }
-    }
-  }
-  return result;
-}
-
-function autoResize(el: HTMLElement) {
+/** Up to two thirds of the window while typing, so the messages above still show; one line otherwise. */
+function autoResize(el: HTMLElement, open = document.activeElement === el) {
+  const before = el.style.height;
   el.style.height = "auto";
-  el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  const full = el.scrollHeight;
+  const style = getComputedStyle(el);
+  const oneLine = parseFloat(style.lineHeight) + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+  const target = open ? Math.min(full, window.innerHeight * 0.66) : Math.min(full, oneLine);
+  // Back to where it was first, so the height animates rather than jumps.
+  el.style.height = before;
+  void el.offsetHeight;
+  el.style.height = `${target}px`;
+  if (!open) el.scrollTop = 0;
+  el.toggleAttribute("data-collapsed", !open && full > oneLine);
 }
 
-function getEmojiQueryAtCursor(): string | null {
-  const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
-
-  const range = sel.getRangeAt(0);
-  const node = range.startContainer;
-  if (node.nodeType !== Node.TEXT_NODE) return null;
-
-  return emojiQueryAt(node.textContent || "", range.startOffset)?.name ?? null;
+/** Shrinking under a press moves whatever was pressed, and the click misses. So it waits for the release. */
+function shrinkAfterPress(el: HTMLElement) {
+  const shrink = () => setTimeout(() => autoResize(el), 150);
+  if (document.querySelector(":active")) window.addEventListener("pointerup", shrink, { once: true });
+  else shrink();
 }
 
-const QUERY = { "@": /(^|[\s])@([a-zA-Z0-9_ ]*)$/, "#": /(^|[\s])#([a-zA-Z0-9_-]*)$/ } as const;
-
-function getQueryAtCursor(trigger: "@" | "#"): string | null {
-  const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
-
-  const range = sel.getRangeAt(0);
-  const node = range.startContainer;
-  if (node.nodeType !== Node.TEXT_NODE) return null;
-
-  const text = node.textContent || "";
-  const offset = range.startOffset;
-  const before = text.slice(0, offset);
-
-  const match = before.match(QUERY[trigger]);
-  if (!match) return null;
-
-  const afterCursor = text.slice(offset);
-  if (afterCursor.length > 0 && /^[a-zA-Z0-9_]/.test(afterCursor)) return null;
-
-  return match[2];
+/** The pill a pick turns into. @everyone and @here stay text, as the old box sent them. */
+function pillFor(member: MentionMember): EditorPill {
+  if (member.kind === "channel" && member.channelId) return { dataset: { channelId: member.channelId }, text: `#${member.nickname}` };
+  if (member.kind === "role" && member.roleId) return { dataset: { roleId: member.roleId, mentionName: `@${member.nickname}` }, text: `@${member.nickname}` };
+  // Shown, never sent: the stored label stays the name, from `mentionName`.
+  return {
+    dataset: { mentionId: member.serverUserId, mentionName: `@${member.nickname}` },
+    text: member.tag ? `@${member.nickname} ${member.tag}` : `@${member.nickname}`,
+  };
 }
 
-/** The pill a pick turns into, or plain text for @everyone and @here. */
-function mentionNode(member: MentionMember): Node {
-  if (member.kind === "everyone" || member.kind === "here") return document.createTextNode(`@${member.kind}`);
-  const pill = document.createElement("span");
-  pill.className = "chat-editor-mention";
-  if (member.kind === "channel" && member.channelId) {
-    pill.dataset.channelId = member.channelId;
-    pill.textContent = `#${member.nickname}`;
-  } else if (member.kind === "role" && member.roleId) {
-    pill.dataset.roleId = member.roleId;
-    pill.dataset.mentionName = `@${member.nickname}`;
-    pill.textContent = `@${member.nickname}`;
-  } else {
-    pill.dataset.mentionId = member.serverUserId;
-    pill.dataset.mentionName = `@${member.nickname}`;
-    // Shown, never sent: the stored label stays the name, from `mentionName`.
-    pill.textContent = member.tag ? `@${member.nickname} ${member.tag}` : `@${member.nickname}`;
-  }
-  pill.contentEditable = "false";
-  pill.draggable = false;
-  return pill;
+/** The text before and after the caret, when it sits in plain text. */
+function $caretText(): { node: LexicalNode; before: string; after: string; offset: number } | null {
+  const sel = $getSelection();
+  if (!$isRangeSelection(sel) || !sel.isCollapsed()) return null;
+  const node = sel.anchor.getNode();
+  if (!$isTextNode(node) || $isMentionNode(node)) return null;
+  const text = node.getTextContent();
+  return { node, before: text.slice(0, sel.anchor.offset), after: text.slice(sel.anchor.offset), offset: sel.anchor.offset };
 }
 
-function replaceQueryAtCursor(trigger: "@" | "#", member: MentionMember): void {
-  const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0) return;
-
-  const range = sel.getRangeAt(0);
-  const node = range.startContainer;
-  if (node.nodeType !== Node.TEXT_NODE) return;
-
-  const text = node.textContent || "";
-  const offset = range.startOffset;
-  const before = text.slice(0, offset);
-
-  const match = before.match(QUERY[trigger]);
-  if (!match) return;
-
-  const atStart = offset - match[0].length + match[1].length;
-
-  const replaceRange = document.createRange();
-  replaceRange.setStart(node, atStart);
-  replaceRange.setEnd(node, offset);
-  replaceRange.deleteContents();
-
-  const trailing = document.createTextNode(" ");
-  replaceRange.insertNode(trailing);
-  replaceRange.insertNode(mentionNode(member));
-
-  sel.removeAllRanges();
-  const newRange = document.createRange();
-  newRange.setStartAfter(trailing);
-  newRange.collapse(true);
-  sel.addRange(newRange);
-}
-
-function replaceEmojiQueryAtCursor(entry: EmojiEntry): void {
-  const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0) return;
-
-  const range = sel.getRangeAt(0);
-  const node = range.startContainer;
-  if (node.nodeType !== Node.TEXT_NODE) return;
-
-  const offset = range.startOffset;
-  const query = emojiQueryAt(node.textContent || "", offset);
-  if (!query) return;
-
-  const replaceRange = document.createRange();
-  replaceRange.setStart(node, query.start);
-  replaceRange.setEnd(node, offset);
-  replaceRange.deleteContents();
-
-  if (entry.emoji) {
-    const textNode = document.createTextNode(entry.emoji + " ");
-    replaceRange.insertNode(textNode);
-    sel.removeAllRanges();
-    const newRange = document.createRange();
-    newRange.setStartAfter(textNode);
-    newRange.collapse(true);
-    sel.addRange(newRange);
-  } else if (entry.url) {
-    const img = document.createElement("img");
-    img.src = entry.url;
-    img.alt = `:${entry.name}:`;
-    img.dataset.emojiName = entry.name;
-    img.className = "inline-emoji";
-    img.draggable = false;
-    img.contentEditable = "false";
-    const space = document.createTextNode(" ");
-    replaceRange.insertNode(space);
-    replaceRange.insertNode(img);
-    sel.removeAllRanges();
-    const newRange = document.createRange();
-    newRange.setStartAfter(space);
-    newRange.collapse(true);
-    sel.addRange(newRange);
-  }
+/** Replaces the typed query ending at the caret with `nodes`. */
+function $replaceQuery(start: (before: string) => number | null, nodes: LexicalNode[]) {
+  const at = $caretText();
+  const sel = $getSelection();
+  if (!at || !$isRangeSelection(sel)) return;
+  const from = start(at.before);
+  if (from === null) return;
+  sel.anchor.set(at.node.getKey(), from, "text");
+  sel.focus.set(at.node.getKey(), at.offset, "text");
+  sel.insertNodes(nodes);
 }
 
 export const ChatEditor = forwardRef<ChatEditorHandle, ChatEditorProps>(
-  ({ placeholder, unencrypted, disabled, allowFiles, maxFileSize, onSend, onCreatePoll, onArrowUpEmpty, onCancel, onTyping, onStopTyping, isEditing, memberList, channelList, serverHost }, ref) => {
+  ({ placeholder, unencrypted, disabled, allowFiles, maxFileSize, onSend, onCreatePoll, onArrowUpEmpty, onCancel, onTyping, onStopTyping, onChange, isEditing, memberList, channelList, serverHost, confirmMassMention }, ref) => {
     const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
     const [dragFrom, setDragFrom] = useState<number | null>(null);
     const [dropAt, setDropAt] = useState<number | null>(null);
@@ -286,56 +239,50 @@ export const ChatEditor = forwardRef<ChatEditorHandle, ChatEditorProps>(
     const pendingFilesRef = useRef<PendingFile[]>([]);
     pendingFilesRef.current = pendingFiles;
 
-    const editorRef = useRef<HTMLDivElement>(null);
+    const editorRef = useRef<LexicalEditor | null>(null);
+    const wrapperRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const onSendRef = useRef(onSend);
     onSendRef.current = onSend;
+    const confirmMassRef = useRef(confirmMassMention);
+    confirmMassRef.current = confirmMassMention;
     const onTypingRef = useRef(onTyping);
     onTypingRef.current = onTyping;
+    const onChangeRef = useRef(onChange);
+    onChangeRef.current = onChange;
+    // A file added, removed or sent counts as a change too.
+    useEffect(() => onChangeRef.current?.(), [pendingFiles]);
     const onStopTypingRef = useRef(onStopTyping);
     onStopTypingRef.current = onStopTyping;
     const channelListRef = useRef(channelList);
     channelListRef.current = channelList;
 
+    const transformers = useMemo(
+      () => composerTransformers((id) => channelListRef.current?.find((c) => c.channelId === id)?.nickname ?? null),
+      [],
+    );
+
     const [emojiQuery, setEmojiQuery] = useState<string | null>(null);
-    const [showAutocomplete, setShowAutocomplete] = useState(false);
     const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
-
     const [mentionQuery, setMentionQuery] = useState<string | null>(null);
-    const [showMentionAutocomplete, setShowMentionAutocomplete] = useState(false);
     const [channelQuery, setChannelQuery] = useState<string | null>(null);
-
-    const updateAutocompleteQueries = useCallback(() => {
-      const cq = getQueryAtCursor("#");
-      setChannelQuery(cq);
-      if (cq !== null) {
-        setShowMentionAutocomplete(false);
-        setShowAutocomplete(false);
-        return;
-      }
-      const mq = getQueryAtCursor("@");
-      if (mq !== null) {
-        setMentionQuery(mq);
-        setShowMentionAutocomplete(true);
-        setEmojiQuery(null);
-        setShowAutocomplete(false);
-        return;
-      }
-      setMentionQuery(null);
-      setShowMentionAutocomplete(false);
-
-      const eq = getEmojiQueryAtCursor();
-      setEmojiQuery(eq);
-      setShowAutocomplete(eq !== null);
-    }, []);
-
+    const showAutocomplete = emojiQuery !== null;
+    const showMentionAutocomplete = mentionQuery !== null;
     const [length, setLength] = useState(0);
 
-    const handleSend = useCallback(() => {
-      const el = editorRef.current;
-      if (!el) return;
+    const getText = useCallback(() => {
+      let md = "";
+      editorRef.current?.getEditorState().read(() => { md = $convertToMarkdownString(transformers, undefined, true); });
+      return md;
+    }, [transformers]);
 
-      const text = serializeContentEditable(el).trim();
+    const clearText = useCallback(() => {
+      editorRef.current?.update(() => { $getRoot().clear(); });
+      setLength(0);
+    }, []);
+
+    const handleSend = useCallback(() => {
+      const text = getText().trim();
       const files = pendingFilesRef.current.map((p) => p.file);
 
       if (!text && files.length === 0) return;
@@ -344,20 +291,19 @@ export const ChatEditor = forwardRef<ChatEditorHandle, ChatEditorProps>(
       if (text.length > MESSAGE_MAX_LENGTH) return;
 
       // Until this device has agreed to the terms, the draft stays in the box while it asks.
-      termsGate.postAfterAgreeing(() => {
+      const send = () => termsGate.postAfterAgreeing(() => {
         onSendRef.current(text, files);
-        el.textContent = "";
-        autoResize(el);
+        clearText();
         pendingFilesRef.current.forEach((p) => { if (p.previewUrl) URL.revokeObjectURL(p.previewUrl); });
         setPendingFiles([]);
-        setShowAutocomplete(false);
         setEmojiQuery(null);
-        setShowMentionAutocomplete(false);
         setMentionQuery(null);
         setChannelQuery(null);
         onStopTypingRef.current?.();
       });
-    }, []);
+      if (confirmMassRef.current && MASS_MENTION.test(text)) confirmMassRef.current(text, send);
+      else send();
+    }, [getText, clearText]);
 
     const addFiles = useCallback((files: FileList | File[]) => {
       // Covers paste and drag-and-drop as well as the clip, which is why it is
@@ -379,9 +325,9 @@ export const ChatEditor = forwardRef<ChatEditorHandle, ChatEditorProps>(
     }, [maxFileSize, allowFiles]);
 
     const handleKeyDown = useCallback(
-      (e: React.KeyboardEvent<HTMLDivElement>) => {
+      (e: KeyboardEvent) => {
         // A suggestion list that used the key prevented it first. An empty one lets it through.
-        if (e.nativeEvent.defaultPrevented) return;
+        if (e.defaultPrevented) return;
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
           handleSend();
@@ -395,223 +341,266 @@ export const ChatEditor = forwardRef<ChatEditorHandle, ChatEditorProps>(
           return;
         }
         if (e.key === "ArrowUp" && !isEditing && onArrowUpEmpty) {
-          const el = editorRef.current;
-          const text = el ? serializeContentEditable(el).trim() : "";
-          if (!text && pendingFilesRef.current.length === 0) {
+          if (!getText().trim() && pendingFilesRef.current.length === 0) {
             e.preventDefault();
             onArrowUpEmpty();
           }
         }
       },
-      [handleSend, isEditing, onCancel, onArrowUpEmpty]
+      [handleSend, isEditing, onCancel, onArrowUpEmpty, getText]
     );
+    const handleKeyDownRef = useRef(handleKeyDown);
+    handleKeyDownRef.current = handleKeyDown;
 
-    const handlePaste = useCallback(
-      (e: React.ClipboardEvent<HTMLDivElement>) => {
-        const items = e.clipboardData?.items;
-        if (!items) return;
+    const handlePaste = useCallback((e: ClipboardEvent): boolean => {
+      const items = e.clipboardData?.items;
+      if (!items) return false;
 
-        const filesToAdd: File[] = [];
-        for (const item of items) {
-          if (item.kind === "file") {
-            const file = item.getAsFile();
-            if (file) filesToAdd.push(file);
-          }
+      const filesToAdd: File[] = [];
+      for (const item of items) {
+        if (item.kind === "file") {
+          const file = item.getAsFile();
+          if (file) filesToAdd.push(file);
         }
-        if (filesToAdd.length > 0) {
-          e.preventDefault();
-          addFiles(filesToAdd);
-          return;
-        }
-
-        e.preventDefault();
-        const text = e.clipboardData.getData("text/plain");
-        if (!text) return;
-
-        // Oversized text is unsendable and can freeze contentEditable.
-        // Keep it out of the DOM and attach the exact clipboard contents instead.
-        if (text.length > MESSAGE_MAX_LENGTH) {
-          if (isEditing) {
-            toast.error(
-              `Edited messages are limited to ${MESSAGE_MAX_LENGTH.toLocaleString("en")} characters.`,
-            );
-            return;
-          }
-          // The file below would be refused, and the paste gone with it.
-          if (allowFiles === false) {
-            toast.error(LONG_PASTE_NO_FILES);
-            return;
-          }
-
-          addFiles([
-            new File([text], LARGE_PASTE_FILE_NAME, {
-              type: "text/plain;charset=utf-8",
-            }),
-          ]);
-          return;
-        }
-
-        document.execCommand("insertText", false, text);
-      },
-      [addFiles, isEditing, allowFiles]
-    );
-
-    const handleDrop = useCallback(
-      (e: React.DragEvent<HTMLDivElement>) => {
-        const files = e.dataTransfer?.files;
-        if (!files || files.length === 0) return;
-        e.preventDefault();
-        e.stopPropagation();
-        addFiles(files);
-      },
-      [addFiles]
-    );
-
-    const handleInput = useCallback(() => {
-      if (editorRef.current) autoResize(editorRef.current);
-      updateAutocompleteQueries();
-      const body = editorRef.current ? serializeContentEditable(editorRef.current).trim() : "";
-      setLength(body.length);
-      if (body.length > 0) {
-        onTypingRef.current?.();
-      } else {
-        onStopTypingRef.current?.();
       }
-    }, [updateAutocompleteQueries]);
+      e.preventDefault();
+      if (filesToAdd.length > 0) {
+        addFiles(filesToAdd);
+        return true;
+      }
+
+      const text = e.clipboardData?.getData("text/plain");
+      if (!text) return true;
+
+      // Oversized text is unsendable and slows the editor down.
+      // Keep it out of the box and attach the exact clipboard contents instead.
+      if (text.length > MESSAGE_MAX_LENGTH) {
+        if (isEditing) {
+          toast.error(`Edited messages are limited to ${MESSAGE_MAX_LENGTH.toLocaleString("en")} characters.`);
+          return true;
+        }
+        // The file below would be refused, and the paste gone with it.
+        if (allowFiles === false) {
+          toast.error(LONG_PASTE_NO_FILES);
+          return true;
+        }
+        addFiles([new File([text], LARGE_PASTE_FILE_NAME, { type: "text/plain;charset=utf-8" })]);
+        return true;
+      }
+
+      // Only the plain text: a web page's formatting doesn't come along, but its Markdown shows as it'll send.
+      editorRef.current?.update(() => {
+        const sel = $getSelection();
+        if (!$isRangeSelection(sel)) return;
+        if ($findMatchingParent(sel.anchor.getNode(), $isCodeNode)) {
+          sel.insertRawText(text);
+          return;
+        }
+        const caret = sel.clone();
+        const holder = $createParagraphNode();
+        // The import moves the selection into the holder.
+        $convertFromMarkdownString(text, transformers, holder, true);
+        $setSelection(caret);
+        caret.insertNodes(holder.getChildren());
+      });
+      return true;
+    }, [addFiles, isEditing, allowFiles, transformers]);
+    const handlePasteRef = useRef(handlePaste);
+    handlePasteRef.current = handlePaste;
+    const addFilesRef = useRef(addFiles);
+    addFilesRef.current = addFiles;
+
+    /** What the caret is typing: a channel, a mention or an emoji shortcode. */
+    const updateQueries = useCallback(() => {
+      editorRef.current?.getEditorState().read(() => {
+        const at = $caretText();
+        const word = at && !/^[a-zA-Z0-9_]/.test(at.after);
+        const cq = word ? at.before.match(QUERY["#"])?.[2] ?? null : null;
+        const mq = word && cq === null ? at.before.match(QUERY["@"])?.[2] ?? null : null;
+        const eq = at && cq === null && mq === null ? emojiQueryAt(at.before + at.after, at.offset)?.name ?? null : null;
+        setChannelQuery(cq);
+        setMentionQuery(mq);
+        setEmojiQuery(eq);
+      });
+    }, []);
+
+    // Commands and listeners, once the editor exists. EditorRefPlugin sets it in an effect that runs before this one.
+    useEffect(() => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      // Left by keyboard: with a selection still set, the editor's next update takes focus back.
+      let leaving = false;
+      let left = false;
+      const strike = (e: KeyboardEvent) => (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === "x";
+      return mergeRegister(
+        editor.registerCommand(KEY_DOWN_COMMAND, (e) => {
+          if (strike(e)) {
+            e.preventDefault();
+            editor.dispatchCommand(FORMAT_TEXT_COMMAND, "strikethrough");
+            return true;
+          }
+          handleKeyDownRef.current(e);
+          if (e.key === "Escape" && !e.defaultPrevented) {
+            leaving = true;
+            editor.getRootElement()?.blur();
+          }
+          return e.defaultPrevented;
+        }, COMMAND_PRIORITY_HIGH),
+        // A new paragraph, not a <br>: `# ` and `- ` only become blocks at the start of one.
+        editor.registerCommand(KEY_ENTER_COMMAND, (e) => {
+          if (!e?.shiftKey) return false;
+          e.preventDefault();
+          editor.dispatchCommand(INSERT_PARAGRAPH_COMMAND, undefined);
+          return true;
+        }, COMMAND_PRIORITY_HIGH),
+        // Only inside a list. Everywhere else Tab has to keep moving focus out of the box.
+        editor.registerCommand(KEY_TAB_COMMAND, (e) => {
+          const sel = $getSelection();
+          const item = $isRangeSelection(sel) ? $findMatchingParent(sel.anchor.getNode(), $isListItemNode) : null;
+          // Handled but not prevented, or the rich text plugin indents the paragraph and traps focus.
+          if (!item || (e.shiftKey && item.getIndent() === 0)) {
+            leaving = true;
+            return true;
+          }
+          e.preventDefault();
+          editor.dispatchCommand(e.shiftKey ? OUTDENT_CONTENT_COMMAND : INDENT_CONTENT_COMMAND, undefined);
+          return true;
+        }, COMMAND_PRIORITY_HIGH),
+        editor.registerCommand(BLUR_COMMAND, () => {
+          if (leaving) {
+            leaving = false;
+            left = true;
+            editor.update(() => $setSelection(null));
+          }
+          return false;
+        }, COMMAND_PRIORITY_HIGH),
+        // The browser would put the caret before the text.
+        editor.registerCommand(FOCUS_COMMAND, () => {
+          if (left) {
+            left = false;
+            editor.update(() => { $getRoot().selectEnd(); });
+          }
+          return false;
+        }, COMMAND_PRIORITY_HIGH),
+        editor.registerCommand(PASTE_COMMAND, (e) => (e instanceof ClipboardEvent ? handlePasteRef.current(e) : false), COMMAND_PRIORITY_HIGH),
+        editor.registerCommand(DROP_COMMAND, (e) => {
+          const files = e.dataTransfer?.files;
+          if (!files || files.length === 0) return false;
+          e.preventDefault();
+          e.stopPropagation();
+          addFilesRef.current(files);
+          return true;
+        }, COMMAND_PRIORITY_HIGH),
+        editor.registerUpdateListener(({ dirtyElements, dirtyLeaves }) => {
+          updateQueries();
+          if (dirtyElements.size === 0 && dirtyLeaves.size === 0) return;
+          const root = editor.getRootElement();
+          if (root) autoResize(root);
+          const body = getText().trim();
+          setLength(body.length);
+          onChangeRef.current?.();
+          if (body.length > 0) onTypingRef.current?.();
+          else onStopTypingRef.current?.();
+        }),
+      );
+    }, [getText, updateQueries]);
+
+    useEffect(() => { editorRef.current?.setEditable(!disabled); }, [disabled]);
+
+    // Nodes can only be made inside an update, hence the factory.
+    const insertAtCaret = useCallback((make: () => LexicalNode[]) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      editor.focus();
+      editor.update(() => {
+        let sel = $getSelection();
+        if (!$isRangeSelection(sel)) {
+          $getRoot().selectEnd();
+          sel = $getSelection();
+        }
+        if ($isRangeSelection(sel)) sel.insertNodes(make());
+      });
+    }, []);
 
     const handleEmojiSelect = useCallback((entry: EmojiEntry) => {
-      replaceEmojiQueryAtCursor(entry);
+      const { emoji, url, name } = entry;
+      if (!emoji && !url) return;
+      editorRef.current?.update(() => {
+        const nodes = emoji ? [$createTextNode(`${emoji} `)] : [$createEmojiNode(name, url ?? "", false), $createTextNode(" ")];
+        $replaceQuery((before) => emojiQueryAt(before, before.length)?.start ?? null, nodes);
+      });
       recordRecentEmoji(entry.name, entry.isCustom, serverHost);
-      setShowAutocomplete(false);
       setEmojiQuery(null);
-      if (editorRef.current) autoResize(editorRef.current);
     }, [serverHost]);
 
-    const handleAutocompleteClose = useCallback(() => {
-      setShowAutocomplete(false);
-      setEmojiQuery(null);
+    const handleMentionSelect = useCallback((member: MentionMember) => {
+      editorRef.current?.update(() => {
+        const lead = (before: string) => {
+          const m = before.match(QUERY["@"]);
+          return m ? before.length - m[0].length + m[1].length : null;
+        };
+        const mass = member.kind === "everyone" || member.kind === "here";
+        $replaceQuery(lead, mass ? [$createTextNode(`@${member.kind} `)] : [$createMentionNode(pillFor(member)), $createTextNode(" ")]);
+      });
+      setMentionQuery(null);
     }, []);
 
     const handleChannelSelect = useCallback((channel: MentionMember) => {
-      replaceQueryAtCursor("#", channel);
+      editorRef.current?.update(() => {
+        const lead = (before: string) => {
+          const m = before.match(QUERY["#"]);
+          return m ? before.length - m[0].length + m[1].length : null;
+        };
+        $replaceQuery(lead, [$createMentionNode(pillFor(channel)), $createTextNode(" ")]);
+      });
       setChannelQuery(null);
-      if (editorRef.current) autoResize(editorRef.current);
-    }, []);
-
-    const handleMentionSelect = useCallback((member: MentionMember) => {
-      replaceQueryAtCursor("@", member);
-      setShowMentionAutocomplete(false);
-      setMentionQuery(null);
-      if (editorRef.current) autoResize(editorRef.current);
-    }, []);
-
-    const handleMentionAutocompleteClose = useCallback(() => {
-      setShowMentionAutocomplete(false);
-      setMentionQuery(null);
     }, []);
 
     const handlePickerEmojiSelect = useCallback((src: string) => {
-      const el = editorRef.current;
-      if (!el) return;
-
-      el.focus();
-      const sel = window.getSelection();
-
       const other = /^!\[:([a-zA-Z0-9_+-]+):\]\((https?:\/\/[^)\s]+)\)$/.exec(src);
       if (other) {
-        const img = document.createElement("img");
-        img.src = other[2];
-        img.alt = `:${other[1]}:`;
-        img.dataset.emojiName = other[1];
-        img.dataset.emojiSrc = other[2];
-        img.className = "inline-emoji";
-        img.draggable = false;
-        img.contentEditable = "false";
-        el.appendChild(img);
+        insertAtCaret(() => [$createEmojiNode(other[1], other[2], true), $createTextNode(" ")]);
       } else if (src.startsWith(":") && src.endsWith(":")) {
         const name = src.slice(1, -1);
         const custom = getCustomEmojis().find((e) => e.name === name);
         if (custom?.url) {
-          const img = document.createElement("img");
-          img.src = custom.url;
-          img.alt = src;
-          img.dataset.emojiName = name;
-          img.className = "inline-emoji";
-          img.draggable = false;
-          img.contentEditable = "false";
-          el.appendChild(img);
+          const url = custom.url;
+          insertAtCaret(() => [$createEmojiNode(name, url, false), $createTextNode(" ")]);
           recordRecentEmoji(name, true, serverHost);
         }
       } else {
-        el.appendChild(document.createTextNode(src));
+        insertAtCaret(() => [$createTextNode(`${src} `)]);
       }
-
-      const trailing = document.createTextNode(" ");
-      el.appendChild(trailing);
-
-      if (sel) {
-        sel.removeAllRanges();
-        const range = document.createRange();
-        range.setStartAfter(trailing);
-        range.collapse(true);
-        sel.addRange(range);
-      }
-
-      autoResize(el);
       setEmojiPickerOpen(false);
-    }, [serverHost]);
+    }, [serverHost, insertAtCaret]);
 
     const setContent = useCallback((text: string) => {
-      const el = editorRef.current;
-      if (!el) return;
-      el.textContent = "";
-      const channelName = (id: string) =>
-        channelListRef.current?.find((c) => c.channelId === id)?.nickname ?? null;
-      for (const segment of parseEditSegments(text, channelName)) {
-        if ("text" in segment) {
-          if (segment.text) el.appendChild(document.createTextNode(segment.text));
-          continue;
-        }
-        const pill = document.createElement("span");
-        pill.className = "chat-editor-mention";
-        for (const [key, value] of Object.entries(segment.pill.dataset)) pill.dataset[key] = value;
-        pill.textContent = segment.pill.text;
-        pill.contentEditable = "false";
-        pill.draggable = false;
-        el.appendChild(pill);
-      }
-      autoResize(el);
-      setLength(text.trim().length);
-      requestAnimationFrame(() => {
-        el.focus();
-        const sel = window.getSelection();
-        if (sel) {
-          sel.selectAllChildren(el);
-          sel.collapseToEnd();
-        }
+      const editor = editorRef.current;
+      if (!editor) return;
+      editor.update(() => {
+        $convertFromMarkdownString(text, transformers, undefined, true);
+        $getRoot().selectEnd();
       });
-    }, []);
+      setLength(text.trim().length);
+      onChangeRef.current?.();
+      editor.focus();
+    }, [transformers]);
 
     useImperativeHandle(ref, () => ({
       clear: () => {
-        if (editorRef.current) {
-          editorRef.current.textContent = "";
-          autoResize(editorRef.current);
-        }
+        clearText();
         pendingFiles.forEach((p) => { if (p.previewUrl) URL.revokeObjectURL(p.previewUrl); });
         setPendingFiles([]);
       },
       focus: () => editorRef.current?.focus(),
-      getMarkdown: () => editorRef.current ? serializeContentEditable(editorRef.current) : "",
+      getMarkdown: getText,
       getFiles: () => pendingFiles.map((p) => p.file),
       addFiles,
       setContent,
       restore: ({ text, files }) => {
-        const el = editorRef.current;
-        if (!el) return;
         // Whatever was typed since the send stays, and the files join it.
-        if (text && !serializeContentEditable(el).trim()) setContent(text);
-        else el.focus();
+        if (text && !getText().trim()) setContent(text);
+        else editorRef.current?.focus();
         if (files.length > 0) addFiles(files);
       },
     }));
@@ -627,32 +616,16 @@ export const ChatEditor = forwardRef<ChatEditorHandle, ChatEditorProps>(
     useEffect(() => {
       const onMentionUser = (e: Event) => {
         const { serverUserId: id, nickname: name } = (e as CustomEvent<{ serverUserId: string; nickname: string }>).detail;
-        const el = editorRef.current;
-        if (!el || !id) return;
-
-        el.focus();
-
-        const mention = document.createElement("span");
-        mention.className = "chat-editor-mention";
-        mention.dataset.mentionId = id;
-        mention.dataset.mentionName = `@${name}`;
-        mention.textContent = `@${name}`;
-        mention.contentEditable = "false";
-        mention.draggable = false;
-
-        const trailing = document.createTextNode(" ");
-        el.appendChild(mention);
-        el.appendChild(trailing);
-
-        const sel = window.getSelection();
-        if (sel) {
-          sel.removeAllRanges();
-          const range = document.createRange();
-          range.setStartAfter(trailing);
-          range.collapse(true);
-          sel.addRange(range);
-        }
-        autoResize(el);
+        const editor = editorRef.current;
+        if (!editor || !id) return;
+        editor.focus();
+        editor.update(() => {
+          $getRoot().selectEnd();
+          const sel = $getSelection();
+          if ($isRangeSelection(sel)) {
+            sel.insertNodes([$createMentionNode({ dataset: { mentionId: id, mentionName: `@${name}` }, text: `@${name}` }), $createTextNode(" ")]);
+          }
+        });
       };
       window.addEventListener("mention_user", onMentionUser);
       return () => window.removeEventListener("mention_user", onMentionUser);
@@ -664,6 +637,7 @@ export const ChatEditor = forwardRef<ChatEditorHandle, ChatEditorProps>(
       };
     }, []);
 
+    const hint = placeholder || "Type a message...";
     const canSend = length > 0 || pendingFiles.length > 0;
     return (
       <div className={`chat-editor-shell ${disabled ? "chat-editor-disabled" : ""}`}>
@@ -695,7 +669,7 @@ export const ChatEditor = forwardRef<ChatEditorHandle, ChatEditorProps>(
             </Menu.Portal>
           </Menu.Root>
         )}
-      <div className="chat-editor-wrapper" data-unencrypted={unencrypted ? "" : undefined} style={{ position: "relative" }}>
+      <div ref={wrapperRef} className="chat-editor-wrapper" data-unencrypted={unencrypted ? "" : undefined} style={{ position: "relative" }}>
         {pendingFiles.length > 0 && (
           <div className="chat-editor-file-preview-bar">
             {/* Drag a file left or right to change the order it's sent in (GRYT-1722 draft). */}
@@ -705,7 +679,7 @@ export const ChatEditor = forwardRef<ChatEditorHandle, ChatEditorProps>(
                 className="chat-editor-file-preview"
                 draggable={pendingFiles.length > 1}
                 data-dragging={dragFrom === i || undefined}
-                data-drop={dropAt === i ? "before" : dropAt === i + 1 && i === pendingFiles.length - 1 ? "after" : undefined}
+                data-drop={dropMarker(dropAt, i, pendingFiles.length)}
                 onDragStart={(e) => {
                   setDragFrom(i);
                   e.dataTransfer.effectAllowed = "move";
@@ -753,7 +727,7 @@ export const ChatEditor = forwardRef<ChatEditorHandle, ChatEditorProps>(
           query={emojiQuery || ""}
           visible={showAutocomplete}
           onSelect={handleEmojiSelect}
-          onClose={handleAutocompleteClose}
+          onClose={() => setEmojiQuery(null)}
           serverHost={serverHost}
         />
         <MentionAutocomplete
@@ -761,7 +735,7 @@ export const ChatEditor = forwardRef<ChatEditorHandle, ChatEditorProps>(
           visible={showMentionAutocomplete}
           members={memberList || []}
           onSelect={handleMentionSelect}
-          onClose={handleMentionAutocompleteClose}
+          onClose={() => setMentionQuery(null)}
         />
         <MentionAutocomplete
           query={channelQuery || ""}
@@ -771,73 +745,95 @@ export const ChatEditor = forwardRef<ChatEditorHandle, ChatEditorProps>(
           onClose={() => setChannelQuery(null)}
           title="Channels"
         />
-        <div className="chat-editor-input-row">
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            style={{ display: "none" }}
-            onChange={(e) => {
-              if (e.target.files) addFiles(e.target.files);
-              e.target.value = "";
-            }}
-          />
-          <div
-            ref={editorRef}
-            className="chat-editor-textarea"
-            contentEditable={!disabled}
-            role="textbox"
-            aria-placeholder={placeholder || "Type a message..."}
-            data-placeholder={placeholder || "Type a message..."}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            onDrop={handleDrop}
-            onInput={handleInput}
-            onClick={updateAutocompleteQueries}
-          />
-          {length >= COUNTER_VISIBLE_FROM && (
-            <span
-              className="chat-editor-counter"
-              data-over={length > MESSAGE_MAX_LENGTH ? "true" : undefined}
-              /* Polite: it updates on every keystroke near the cap, and an
-                 assertive live region would interrupt the typing it counts. */
-              aria-live="polite"
-            >
-              {(MESSAGE_MAX_LENGTH - length).toLocaleString("en")}
-            </span>
-          )}
-          <div style={{ position: "relative" }}>
-            <button
-              className="chat-editor-emoji-btn"
-              type="button"
-              aria-label="Insert emoji"
-              disabled={disabled}
-              onClick={() => setEmojiPickerOpen((v) => !v)}
-            >
-              <PiSmileyWinkFill size={20} />
-            </button>
-            {emojiPickerOpen && (
-              <EmojiPicker
-                onSelect={handlePickerEmojiSelect}
-                onClose={() => setEmojiPickerOpen(false)}
-                serverHost={serverHost}
-                withOtherServers
+        <LexicalComposer
+          initialConfig={{
+            namespace: "gryt-composer",
+            nodes: NODES,
+            theme: THEME,
+            editable: !disabled,
+            onError: (e) => { throw e; },
+          }}
+        >
+          <EditorRefPlugin editorRef={editorRef} />
+          <ComposerFormatBar disabled={disabled} />
+          <div className="chat-editor-input-row">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              style={{ display: "none" }}
+              onChange={(e) => {
+                if (e.target.files) addFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <div className="chat-editor-lexical-field">
+              <RichTextPlugin
+                contentEditable={
+                  <ContentEditable
+                    className="chat-editor-textarea chat-editor-lexical"
+                    aria-placeholder={hint}
+                    placeholder={<div className="chat-editor-lexical-placeholder">{hint}</div>}
+                    onFocus={(e) => autoResize(e.currentTarget, true)}
+                    onBlur={(e) => {
+                      // Into the link field is still writing this message.
+                      if (!wrapperRef.current?.contains(e.relatedTarget as Node | null)) shrinkAfterPress(e.currentTarget);
+                    }}
+                  />
+                }
+                ErrorBoundary={LexicalErrorBoundary}
               />
+            </div>
+            {length >= COUNTER_VISIBLE_FROM && (
+              <span
+                className="chat-editor-counter"
+                data-over={length > MESSAGE_MAX_LENGTH ? "true" : undefined}
+                /* Polite: it updates on every keystroke near the cap, and an
+                   assertive live region would interrupt the typing it counts. */
+                aria-live="polite"
+              >
+                {(MESSAGE_MAX_LENGTH - length).toLocaleString("en")}
+              </span>
+            )}
+            <div style={{ position: "relative" }}>
+              <button
+                className="chat-editor-emoji-btn"
+                type="button"
+                aria-label="Insert emoji"
+                disabled={disabled}
+                onClick={() => setEmojiPickerOpen((v) => !v)}
+              >
+                <PiSmileyWinkFill size={20} />
+              </button>
+              {emojiPickerOpen && (
+                <EmojiPicker
+                  onSelect={handlePickerEmojiSelect}
+                  onClose={() => setEmojiPickerOpen(false)}
+                  serverHost={serverHost}
+                  withOtherServers
+                />
+              )}
+            </div>
+            {/* Round, and only once there is something to send. Enter still sends. */}
+            {canSend && (
+              <button
+                className="chat-editor-send-btn"
+                type="button"
+                aria-label="Send message"
+                disabled={disabled}
+                onClick={handleSend}
+              >
+                <PiArrowUpBold size={18} />
+              </button>
             )}
           </div>
-          {/* Round, and only once there is something to send. Enter still sends. */}
-          {canSend && (
-            <button
-              className="chat-editor-send-btn"
-              type="button"
-              aria-label="Send message"
-              disabled={disabled}
-              onClick={handleSend}
-            >
-              <PiArrowUpBold size={18} />
-            </button>
-          )}
-        </div>
+          <HistoryPlugin />
+          <ListPlugin />
+          <LinkPlugin />
+          {/* The same matches as the message view's remark-gfm: http(s), www. and email, not a bare `gryt.chat`. */}
+          <AutoLinkPlugin matchers={AUTOLINK_MATCHERS} />
+          <MarkdownShortcutPlugin transformers={transformers} />
+        </LexicalComposer>
       </div>
       </div>
     );

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
-import { Socket } from "socket.io-client";
+import type { Socket } from "socket.io-client";
 import { v4 as uuidv4 } from "uuid";
 
 import { getServerAccessToken, type NotificationLevel } from "@/common";
@@ -13,7 +13,7 @@ import {
   scopeSetPayload,
 } from "@/settings/src/channelPermissionRules";
 import { type ChannelScopeState, folderMoveAction } from "@/settings/src/folderPermissionRules";
-import { Channel, serverDetailsList as ServerDetailsList,SidebarItem, SidebarReorderEntry } from "@/settings/src/types/server";
+import type { Channel, serverDetailsList as ServerDetailsList, SidebarItem, SidebarReorderEntry } from "@/settings/src/types/server";
 
 import { type ChannelKind, fieldsToKind, kindToFields } from "../components/channelKind";
 import type { ForumTagDraft } from "../components/ForumTagsField";
@@ -174,11 +174,8 @@ export function useSidebarEditor({
 
   useEffect(() => {
     if (!editDialogOpen) return;
-    const target = editingChannelId
-      ? { kind: "channel" as const, id: editingChannelId }
-      : editingFolderId
-        ? { kind: "folder" as const, id: editingFolderId }
-        : null;
+    const folder = editingFolderId ? { kind: "folder" as const, id: editingFolderId } : null;
+    const target = editingChannelId ? { kind: "channel" as const, id: editingChannelId } : folder;
     if (!target) return;
     if (!currentlyViewingServer || !currentConnection?.connected) return;
 
@@ -460,6 +457,8 @@ export function useSidebarEditor({
           name: type === "voice" ? "New voice channel" : "New channel",
           type,
           description: null,
+          // Voice channels have their own text chat from the start (GRYT-1897).
+          textInVoice: type === "voice",
         });
         currentConnection.emit("server:sidebar:item:upsert", {
           accessToken,
@@ -510,6 +509,7 @@ export function useSidebarEditor({
         name: opts.name.trim() || (opts.type === "voice" ? "New voice channel" : "New channel"),
         type: opts.type,
         description: opts.description ?? null,
+        textInVoice: opts.type === "voice",
         layout: opts.layout ?? "chat",
         automated: opts.automated ?? false,
         forumTags: opts.forumTags ?? [],
@@ -636,11 +636,8 @@ export function useSidebarEditor({
        the empty case: a nameless separator is a rule, a nameless folder is not. */
     if (selectedSidebarItem.kind === "separator" || selectedSidebarItem.kind === "folder") {
       const typed = sheetSeparatorLabel.trim();
-      const label = typed.length
-        ? typed
-        : selectedSidebarItem.kind === "folder"
-          ? selectedSidebarItem.label ?? "New folder"
-          : null;
+      const untitled = selectedSidebarItem.kind === "folder" ? selectedSidebarItem.label ?? "New folder" : null;
+      const label = typed.length ? typed : untitled;
       currentConnection.emit("server:sidebar:item:upsert", {
         accessToken,
         itemId: selectedSidebarItem.id,

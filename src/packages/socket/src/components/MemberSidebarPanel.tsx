@@ -1,5 +1,5 @@
 import { motion } from "motion/react";
-import { RefObject } from "react";
+import type { RefObject } from "react";
 
 import type { AdminActions, MemberInfo } from "./MemberSidebar";
 import { MemberSidebar } from "./MemberSidebar";
@@ -12,6 +12,7 @@ const SIDEBAR_SPRING = { type: "spring" as const, stiffness: 380, damping: 34 };
 interface MemberSidebarPanelProps {
   sidebarOpen: boolean;
   sidebarWidthPx: number;
+  avatarsOnly?: boolean;
   hoverPx: number;
   contentRef: RefObject<HTMLDivElement | null>;
   isUnreachableWhileConnected: boolean;
@@ -31,7 +32,7 @@ interface MemberSidebarPanelProps {
 }
 
 export const MemberSidebarPanel = ({
-  sidebarOpen, sidebarWidthPx, hoverPx, contentRef,
+  sidebarOpen, sidebarWidthPx, avatarsOnly, hoverPx, contentRef,
   isUnreachableWhileConnected,
   onMouseEnter, onMouseLeave,
   members, currentConnectionId, currentServerUserId,
@@ -108,6 +109,8 @@ export const MemberSidebarPanel = ({
           }}
         >
           <MemberSidebar
+            width={sidebarWidthPx}
+            avatarsOnly={avatarsOnly}
             members={members}
             currentConnectionId={currentConnectionId}
             currentServerUserId={currentServerUserId}

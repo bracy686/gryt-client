@@ -1,0 +1,33 @@
+# Served to the browser as-is, and written by the container at startup.
+public/config.js
+
+# Addon samples people copy. The client loads an addon's files as they are, so they're JavaScript.
+examples/presence/index.js
+examples/presence/source.mjs
+
+# eslint 8 reads its config only from JavaScript.
+.eslintrc.cjs
+
+# The Windows signing hook, what it imports, and the check that loads it. Only a Windows build runs them (GRYT-1800).
+scripts/check-windows-signature.mjs
+scripts/sign-windows.cjs
+scripts/windows-signature.mjs
+
+# Chinese AST localization/build tooling and existing isolated desktop checks, retained by the fork.
+scripts/check-window-state-electron.mjs
+scripts/check-window-state.mjs
+zh/browser-smoke.mjs
+zh/check-windows-package.mjs
+zh/check.mjs
+zh/extract.mjs
+zh/lib.mjs
+zh/make-batches.mjs
+zh/plugin.mjs
+zh/rewrite.test.mjs
+zh/selftest.mjs
+zh/structure.mjs
+zh/template-rules.mjs
+zh/verify-parts.mjs
+zh/window-settings-smoke.mjs
+zh/windows-installer-smoke.mjs
+zh/windows-installer.test.mjs

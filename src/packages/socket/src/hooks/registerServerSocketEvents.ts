@@ -1,12 +1,13 @@
 import { warmSfuSelection } from "@gryt/voice";
-import { createElement, Dispatch, MutableRefObject, SetStateAction } from "react";
+import { createElement, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import toast from "react-hot-toast";
-import { Socket } from "socket.io-client";
+import type { Socket } from "socket.io-client";
 
 import { setAnnouncedPlugins } from "@/addons";
 import {
   addMention,
   addThreadMention,
+  getAccountProfile,
   getServerAccessToken,
   getServerRefreshToken,
   getStoredWorn,
@@ -21,6 +22,7 @@ import {
   setServerFileAccess,
   setServerNotice,
   setServerRefreshToken,
+  setServerUnread,
   setThreadMentionCounts,
   subscribeToPrefs,
 } from "@/common";
@@ -32,11 +34,10 @@ import {
   type MemberKeyState,
   ownDmPublicKey,
   ownPersonPublicKey,
-  readSealedVault,
 } from "@/common";
 import { rememberChannelNames } from "@/lib/channelDirectory";
 import { claimOutcomeToast, guestIsGone, takeClaimOutcome } from "@/lib/identityClaimOutcome";
-import {
+import type {
   Server,
   serverDetails,
   serverDetailsList,
@@ -45,7 +46,7 @@ import {
 
 import { PiArrowsClockwiseFill, PiClockFill, PiInfoFill } from "../../../../lib/icons";
 import { type DmKeyFix, dmKeyWarningsOff, showDmKeyWarning } from "../components/dmKeyWarningToast";
-import { MemberInfo } from "../components/MemberSidebar";
+import type { MemberInfo } from "../components/MemberSidebar";
 import {
   applyCallMemberships,
   type CallMemberships,
@@ -53,8 +54,8 @@ import {
 } from "../lib/callMembers";
 import { cardToOffer, cardUpdatePayload, hasCardFields } from "../lib/memberCard/cardStore";
 import { cardProfileFor } from "../lib/memberCard/generatedCard";
-import { attachServerMls, serverMlsPinned, serverMlsReady } from "../mls/serverMls";
-import { Clients, ServerProfile } from "../types/clients";
+import { attachServerMls, serverMlsOwnKey, serverMlsPinned, serverMlsReady } from "../mls/serverMls";
+import type { Clients, ServerProfile } from "../types/clients";
 import { publishDmKey } from "../utils/dmKeys";
 import { fetchCustomEmojis, setCustomEmojis } from "../utils/emojiData";
 import { setExternalEmojisAllowed } from "../utils/externalEmojiPolicy";
@@ -66,6 +67,7 @@ import { setServerJoinPolicy } from "./useServerJoinPolicy";
 
 const TOKEN_HEAL_COOLDOWN_MS = 10_000;
 const tokenHealLastAttempt = new Map<string, number>();
+const nonceRetryLastAttempt = new Map<string, number>();
 
 /** The member list identifies people by serverUserId but says nothing about
     which entry is you, so this is how the two are joined up. */
@@ -167,7 +169,7 @@ function forgetDmKeyWarningDismissed(host: string): void {
 /** What this device can do about a mismatch, asked of the account. */
 async function dmKeyFix(): Promise<DmKeyFix> {
   try {
-    return (await readSealedVault()) ? "unlock" : "set-up";
+    return (await getAccountProfile()).sub ? "set-up" : "none";
   } catch {
     // Not signed in, or the account would not answer. Neither button would
     // work, so neither is offered.
@@ -213,6 +215,22 @@ export function registerServerSocketEvents(socket: Socket, host: string, ctx: Se
     askedForMentions = true;
     socket.emit("mentions:list");
   }
+
+  /* Read markers, asked for on the same moments as mentions and for the same reason: a
+     reload, a reconnect and a rejoin are each a point the counts have gone stale. */
+  let askedForRead = false;
+  socket.on("disconnect", () => { askedForRead = false; });
+
+  function askForRead() {
+    askedForRead = true;
+    socket.emit("read:list");
+  }
+
+  /* One name for the question and the answer, as mentions does, so a second window
+     cannot end up disagreeing about what is left. */
+  socket.on("read:list", (payload: { counts?: Record<string, number>; markers?: { conversation_id: string }[] }) => {
+    setServerUnread(host, payload?.counts ?? {}, (payload?.markers ?? []).map((m) => m.conversation_id));
+  });
 
   const { nickname, userIdRef, servers, serversRef, lastInviteJoinAttemptRef, myVoiceStateByHostRef } = ctx;
   const { setServers, setNewServerInfo, setServerDetailsList, setFailedServerDetails } = ctx;
@@ -265,6 +283,13 @@ export function registerServerSocketEvents(socket: Socket, host: string, ctx: Se
   });
 
   socket.on("server:details", (data: serverDetails) => {
+    const publicHost = data.server_info?.public_host;
+    const saved = serversRef.current[host];
+    if (saved && typeof publicHost === "string" && publicHost !== host && saved.publicHost !== publicHost) {
+      const updated = { ...serversRef.current, [host]: { ...saved, publicHost } };
+      serversRef.current = updated;
+      setServers(updated);
+    }
     // An older server says nothing, which reads as off.
     setExternalEmojisAllowed(host, data.server_info?.external_emojis === true);
     /* Where the sidebar arrives, and the layer deciding whether a message makes a
@@ -336,7 +361,7 @@ export function registerServerSocketEvents(socket: Socket, host: string, ctx: Se
       if (data.error === 'rate_limited') {
         handleRateLimitError({ error: data.error, message: data.message }, "Server details");
       } else {
-        toast.error(`Access denied: ${data.message}`);
+        toast.error(data.message || `${host} wouldn't share its details with you.`);
       }
       return;
     }
@@ -346,6 +371,7 @@ export function registerServerSocketEvents(socket: Socket, host: string, ctx: Se
     /* A reload never gets `server:joined`, so this was the only event left that
        says the session is back and the member is known (GRYT-1388). */
     if (!askedForMentions) askForMentions();
+    if (!askedForRead) askForRead();
 
     // Not awaited: a key that never arrives means no encrypted messages rather
     // than a connection that failed.
@@ -435,6 +461,7 @@ export function registerServerSocketEvents(socket: Socket, host: string, ctx: Se
     // Every join, not just the first: being away is when this accumulates, and it
     // is how a mention read on a phone stops showing here.
     askForMentions();
+    askForRead();
 
     // Read when the event fires, not at registration: the socket exists before
     // `useUserId` resolves, so a captured value was usually null.
@@ -540,8 +567,24 @@ export function registerServerSocketEvents(socket: Socket, host: string, ctx: Se
     }));
   });
 
-  socket.on("server:error", (errorInfo: { error: string; message?: string; retryAfterMs?: number; currentScore?: number; maxScore?: number; canReapply?: boolean }) => {
+  socket.on("server:error", (errorInfo: { error: string; message?: string; retryAfterMs?: number; currentScore?: number; maxScore?: number; canReapply?: boolean; reason?: string }) => {
     console.error(`Server join failed for ${host}:`, errorInfo);
+
+    // A sign-in mid-join answers the old challenge with the new key. A fresh join gets a fresh nonce.
+    if (errorInfo.error === "identity_verification_failed" && errorInfo.reason === "nonce_mismatch") {
+      const last = nonceRetryLastAttempt.get(host) ?? 0;
+      if (Date.now() - last >= TOKEN_HEAL_COOLDOWN_MS) {
+        nonceRetryLastAttempt.set(host, Date.now());
+        toast("Still joining…", { id: `still-joining:${host}`, duration: 3000 });
+        socket.emit("server:join", {
+          nickname,
+          inviteCode: serversRef.current[host]?.token || undefined,
+        });
+        return;
+      }
+      toast.error(errorInfo.message || `Couldn't join ${host}. Try again in a moment.`, { id: `still-joining:${host}` });
+      return;
+    }
 
     if (errorInfo.error === 'rate_limited' && errorInfo.message) {
       handleRateLimitError(errorInfo, "Server connection");
@@ -701,9 +744,8 @@ export function registerServerSocketEvents(socket: Socket, host: string, ctx: Se
         });
       }
       return;
-    } else {
-      toast.error(`Failed to join server ${host}: ${errorInfo.error}`);
     }
+    toast.error(errorInfo.message || `Couldn't join ${host}. Try again in a moment.`);
   });
 
   /** Sent into that call's own room and nowhere else, so receiving it is the
@@ -784,6 +826,9 @@ export function registerServerSocketEvents(socket: Socket, host: string, ctx: Se
       )
       .then((states) => {
         setMemberKeyStates((old) => ({ ...old, [host]: states }));
+        const mine = states[myServerUserIdByHost.get(host) ?? ""];
+        const mineRow = data.find((m) => m.serverUserId === myServerUserIdByHost.get(host));
+        serverMlsOwnKey(host, !!(mine?.ownKeyRewritten || mine?.ownPersonKeyRewritten), mineRow?.dmKeyBinding ?? null, mineRow?.keyResetAt ?? null);
         serverMlsPinned(host);
 
         /* Held back before it is shown, since our own publish races the first
@@ -868,7 +913,7 @@ export function registerServerSocketEvents(socket: Socket, host: string, ctx: Se
   });
 
   socket.on("error", (msg: unknown) => {
-    const text = typeof msg === "string" ? msg : ((msg as Record<string, unknown>)?.message || "Unknown socket error");
-    toast.error(`[${host}] ${text}`);
+    console.error(`[${host}] socket error:`, msg);
+    toast.error(`Something went wrong talking to ${host}. Try again in a moment.`, { id: `socket-error:${host}` });
   });
 }

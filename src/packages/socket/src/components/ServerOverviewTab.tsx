@@ -21,12 +21,23 @@ function normalizeSpamSensitivity(v: unknown): SpamSensitivity {
 /** Mirrors the server's `JoinPolicy`. `approval` exists there as room to grow. */
 type JoinPolicy = "invite" | "request" | "open";
 
+function responseError(data: Record<string, unknown>, raw: string, resp: Response): string {
+  const said = [data.message, data.error].find((v): v is string => typeof v === "string" && v.trim().length > 0);
+  return said ?? (raw.trim() || `HTTP ${resp.status} ${resp.statusText || ""}`.trim());
+}
+
+function iconHint(s: { isUploadingIcon: boolean; isClearingIcon: boolean; canEdit: boolean }): string {
+  if (s.isUploadingIcon) return "Uploading...";
+  if (s.isClearingIcon) return "Clearing...";
+  return s.canEdit ? "Click to change icon" : "Server icon";
+}
+
 /**
  * Anything unrecognised reads as `invite`, matching the server's own
  * normaliseJoinPolicy. A newer value must leave a server harder to get into.
  */
 function normalizeJoinPolicy(v: unknown): JoinPolicy {
-  return v === "open" ? "open" : v === "request" ? "request" : "invite";
+  return v === "open" || v === "request" ? v : "invite";
 }
 type CensorStyle = "grawlix" | "emoji" | "asterisks" | "block" | "hearts";
 
@@ -51,6 +62,8 @@ type ServerSettingsPayload = {
   videoProfiles?: boolean;
   /** Absent on a server from before the setting, which then shows no switch. */
   externalEmojis?: boolean;
+  /** Absent on a server from before GRYT-2055, which then shows no switch. */
+  linkHistory?: boolean;
   /** What this host can do with uploads; an older server sends nothing. */
   media?: { checked?: boolean; video?: boolean };
 };
@@ -109,6 +122,7 @@ export function ServerOverviewTab({
   const [spamSensitivity, setSpamSensitivity] = useState<SpamSensitivity>("normal");
   const [videoProfiles, setVideoProfiles] = useState(true);
   const [externalEmojis, setExternalEmojis] = useState<boolean | null>(null);
+  const [linkHistory, setLinkHistory] = useState<boolean | null>(null);
   const [media, setMedia] = useState<{ checked: boolean; video: boolean } | null>(null);
 
   const [autosaving, setAutosaving] = useState(false);
@@ -129,6 +143,7 @@ export function ServerOverviewTab({
     spamSensitivity: SpamSensitivity;
     videoProfiles: boolean;
     externalEmojis: boolean;
+    linkHistory: boolean;
   } | null>(null);
 
   const [avatarMaxMb, setAvatarMaxMb] = useState<string>("");
@@ -188,6 +203,7 @@ export function ServerOverviewTab({
       setSpamSensitivity(normalizeSpamSensitivity(payload.spamSensitivity));
       setVideoProfiles(payload.videoProfiles !== false);
       setExternalEmojis(typeof payload.externalEmojis === "boolean" ? payload.externalEmojis : null);
+      setLinkHistory(typeof payload.linkHistory === "boolean" ? payload.linkHistory : null);
       setMedia(payload.media ? { checked: !!payload.media.checked, video: !!payload.media.video } : null);
 
       if (!wasSaving) {
@@ -219,6 +235,7 @@ export function ServerOverviewTab({
         spamSensitivity: normalizeSpamSensitivity(payload.spamSensitivity),
         videoProfiles: payload.videoProfiles !== false,
         externalEmojis: payload.externalEmojis === true,
+        linkHistory: payload.linkHistory !== false,
       };
     };
 
@@ -282,6 +299,7 @@ export function ServerOverviewTab({
     spamSensitivity: SpamSensitivity;
     videoProfiles: boolean;
     externalEmojis: boolean;
+    linkHistory: boolean;
   }>): boolean => {
     if (!host || !socket || !socket.connected) {
       toast.error("Not connected to the server.");
@@ -289,7 +307,7 @@ export function ServerOverviewTab({
     }
     if (!effectiveAccessToken) {
       ensureJoined();
-      toast.error("Missing access token. Try rejoining the server.");
+      toast.error("You're not signed in to this server. Leave it and join again.");
       return false;
     }
     if (!canEdit) {
@@ -361,14 +379,7 @@ export function ServerOverviewTab({
         data = {};
       }
       if (!resp.ok) {
-        const msg =
-          (typeof data?.message === "string" && data.message.trim().length > 0)
-            ? data.message
-            : (typeof data?.error === "string" && data.error.trim().length > 0)
-              ? data.error
-              : (raw && raw.trim().length > 0)
-                ? raw.trim()
-                : `HTTP ${resp.status} ${resp.statusText || ""}`.trim();
+        const msg = responseError(data, raw, resp);
         throw new Error(msg);
       }
       toast.success("Icon updated");
@@ -413,14 +424,7 @@ export function ServerOverviewTab({
         data = {};
       }
       if (!resp.ok) {
-        const msg =
-          (typeof data?.message === "string" && data.message.trim().length > 0)
-            ? data.message
-            : (typeof data?.error === "string" && data.error.trim().length > 0)
-              ? data.error
-              : (raw && raw.trim().length > 0)
-                ? raw.trim()
-                : `HTTP ${resp.status} ${resp.statusText || ""}`.trim();
+        const msg = responseError(data, raw, resp);
         throw new Error(msg);
       }
 
@@ -530,13 +534,7 @@ export function ServerOverviewTab({
             </div>
           </button>
           <span className="text-xs">
-            {isUploadingIcon
-              ? "Uploading..."
-              : isClearingIcon
-                ? "Clearing..."
-                : canEdit
-                  ? "Click to change icon"
-                  : "Server icon"}
+            {iconHint({ isUploadingIcon, isClearingIcon, canEdit })}
           </span>
         </div>
 
@@ -617,6 +615,26 @@ export function ServerOverviewTab({
           </div>
           <span className="text-xs text-gryt-muted" style={{ lineHeight: 1.4 }}>
             Each one loads from the server it belongs to, so that server sees who reads it, and this server can't check what the picture shows.
+          </span>
+        </div>
+      )}
+
+      {linkHistory !== null && (
+        <div className="flex flex-col gap-2">
+          <span className="text-sm font-medium">Linking a new device</span>
+          <div className="flex items-center gap-2">
+            <Switch
+              checked={linkHistory}
+              onCheckedChange={(v) => {
+                setLinkHistory(v);
+                if (!saveIfChanged({ linkHistory: v })) setLinkHistory(!v);
+              }}
+              disabled={!canEdit}
+            />
+            <span className="text-sm">Carry members&rsquo; old messages to a device they link</span>
+          </div>
+          <span className="text-xs text-gryt-muted" style={{ lineHeight: 1.4 }}>
+            The messages wait here for up to an hour, locked so this server can&rsquo;t read them. Turned off, a member&rsquo;s old messages stay on the device they link from, unless another of their servers carries them.
           </span>
         </div>
       )}

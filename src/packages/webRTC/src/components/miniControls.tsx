@@ -1,6 +1,6 @@
 import { IconButton } from "@gryt/ui";
 import { useCamera, useScreenShare, useSFU } from "@gryt/voice";
-import { AnimatePresence, motion, Variants } from "motion/react";
+import { AnimatePresence, motion, type Variants } from "motion/react";
 import toast from "react-hot-toast";
 
 import { useTheme } from "@/common";
@@ -8,15 +8,14 @@ import { useSettings } from "@/settings";
 import { useServerManagement } from "@/socket";
 import { useServerPermissions } from "@/socket/src/hooks/usePermissions";
 
-import { PiMicrophoneFill, PiMicrophoneSlashFill, PiPhoneDisconnectFill, PiSignOutFill, PiSpeakerHighFill, PiSpeakerSimpleHighFill, PiSpeakerSimpleSlashFill, PiSpeakerSlashFill } from "../../../../lib/icons";
+import { PiCameraFill, PiCameraSlashFill, PiMicrophoneFill, PiMicrophoneSlashFill, PiMonitorArrowUpFill, PiPhoneDisconnectFill, PiSignOutFill, PiSpeakerHighFill, PiSpeakerSlashFill } from "../../../../lib/icons";
 import { useInACall } from "../adapters/inACall";
-import { useScreenAudioMute } from "../adapters/useScreenAudioMute";
 import { useVoicePresence } from "../adapters/useVoicePresence";
+import { type CallButton, pressCallButton, useBackToCall } from "./callButtonPress";
 import { CallCapsuleFace } from "./CallCapsuleFace";
 import { CallControlButton, LEAVE_CLASS } from "./CallControlButton";
-import { CameraControl } from "./CameraControl";
+import { controlState } from "./controlState";
 import { NoiseReductionControl } from "./NoiseReductionControl";
-import { ScreenShareControl } from "./ScreenShareControl";
 
 const buttonAnimations: Variants = {
   hidden: { opacity: 0, x: -15, transition: { duration: 0.1 } },
@@ -35,7 +34,8 @@ const buttonAnimations: Variants = {
 export function MiniControls({
   direction = "row",
 }: {
-  direction: "row" | "column";
+  /** "popout" is the pop-out window's hover bar: a left-to-right row on the capsule, without the call's face. */
+  direction: "row" | "column" | "popout";
 }) {
   const inACall = useInACall();
   const {
@@ -55,9 +55,13 @@ export function MiniControls({
   const { disconnect, currentServerConnected, currentChannelConnected } = useSFU();
   const voice = useVoicePresence();
 
-  const { muted: screenAudioMuted, available: canMuteScreenAudio, setMuted: setScreenAudioMuted } = useScreenAudioMute();
-  const { cameraEnabled } = useCamera();
-  const { screenShareActive } = useScreenShare();
+  const { cameraEnabled, setCameraEnabled } = useCamera();
+  const { screenShareActive, stopScreenShare, extraWindows } = useScreenShare();
+  const backToCall = useBackToCall();
+  const openAndPress = (button: CallButton) => {
+    backToCall(voice.host, voice.channelId);
+    pressCallButton(button);
+  };
   const { canIn } = useServerPermissions(currentServerConnected || "");
   // The room's answer. One already on keeps its button, so it can be turned off.
   const showCamera = cameraEnabled || canIn(currentChannelConnected, "share_video");
@@ -65,7 +69,8 @@ export function MiniControls({
 
   const { resolvedAppearance } = useTheme();
   const isColumn = direction === "column";
-  const iconSize = isColumn ? 16 : 12;
+  const capsule = direction !== "row";
+  const iconSize = direction === "row" ? 12 : 16;
 
   return (
     <>
@@ -79,12 +84,13 @@ export function MiniControls({
             initial="hidden"
             animate="visible"
             exit="hidden"
-            className={isColumn ? "gryt-call-capsule" : undefined}
-            data-live={isColumn ? String(voice.live) : undefined}
-            data-appearance={isColumn ? resolvedAppearance : undefined}
+            className={capsule ? "gryt-call-capsule" : undefined}
+            data-live={capsule ? String(voice.live) : undefined}
+            data-appearance={capsule ? resolvedAppearance : undefined}
+            data-direction={direction}
             style={{
               display: "flex",
-              flexDirection: isColumn ? "column" : "row-reverse",
+              flexDirection: ({ column: "column", row: "row-reverse", popout: "row" } as const)[direction],
               alignItems: "center",
               gap: isColumn ? "5px" : "8px",
             }}
@@ -97,7 +103,7 @@ export function MiniControls({
             )}
             <motion.div variants={buttonAnimations}>
               <CallControlButton
-                state={isServerMuted ? "blocked" : isMuted ? "off" : "idle"}
+                state={controlState(isServerMuted, isMuted)}
                 aria-label={(isMuted || isServerMuted) ? "Unmute microphone" : "Mute microphone"}
                 onClick={() => {
                   if (isServerMuted) {
@@ -113,7 +119,7 @@ export function MiniControls({
 
             <motion.div variants={buttonAnimations}>
               <CallControlButton
-                state={isServerDeafened ? "blocked" : isDeafened ? "off" : "idle"}
+                state={controlState(isServerDeafened, isDeafened)}
                 aria-label={(isDeafened || isServerDeafened) ? "Undeafen" : "Deafen"}
                 onClick={() => {
                   if (isServerDeafened) {
@@ -135,26 +141,37 @@ export function MiniControls({
               <NoiseReductionControl iconSize={iconSize} side={isColumn ? "right" : "top"} />
             </motion.div>
 
+            {/* Plain toggles: off opens the voice view and presses its own button there, on turns straight off. */}
             {showCamera && (
               <motion.div variants={buttonAnimations}>
-                <CameraControl iconSize={iconSize} side={isColumn ? "right" : "top"} />
+                <CallControlButton
+                  state={cameraEnabled ? "live" : "idle"}
+                  aria-label={cameraEnabled ? "Turn camera off" : "Turn camera on"}
+                  data-media
+                  onClick={() => (cameraEnabled ? setCameraEnabled(false) : openAndPress("camera"))}
+                >
+                  {cameraEnabled ? <PiCameraFill size={iconSize} /> : <PiCameraSlashFill size={iconSize} />}
+                </CallControlButton>
               </motion.div>
             )}
 
             {showScreenShare && (
               <motion.div variants={buttonAnimations}>
-                <ScreenShareControl iconSize={iconSize} side={isColumn ? "right" : "top"} />
-              </motion.div>
-            )}
-
-            {canMuteScreenAudio && (
-              <motion.div variants={buttonAnimations}>
                 <CallControlButton
-                  state={screenAudioMuted ? "off" : "idle"}
-                  aria-label={screenAudioMuted ? "Unmute the audio you're sharing" : "Mute the audio you're sharing"}
-                  onClick={() => setScreenAudioMuted(!screenAudioMuted)}
+                  state={screenShareActive ? "live" : "idle"}
+                  aria-label={screenShareActive ? "Stop sharing" : "Share your screen"}
+                  data-media
+                  onClick={() => (screenShareActive ? stopScreenShare() : openAndPress("share"))}
                 >
-                  {screenAudioMuted ? <PiSpeakerSimpleSlashFill size={iconSize} /> : <PiSpeakerSimpleHighFill size={iconSize} />}
+                  <PiMonitorArrowUpFill size={iconSize} />
+                  {screenShareActive && extraWindows.length > 0 && (
+                    <span
+                      className="absolute -right-1 -top-1 flex h-[16px] w-[16px] items-center justify-center rounded-full bg-gryt-success-9 text-[10px] font-extrabold text-gryt-success-1"
+                      aria-hidden
+                    >
+                      {extraWindows.length + 1}
+                    </span>
+                  )}
                 </CallControlButton>
               </motion.div>
             )}

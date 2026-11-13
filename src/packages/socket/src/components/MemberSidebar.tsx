@@ -3,12 +3,13 @@ import { useCallback, useMemo, useState } from "react";
 
 import { getUploadsFileUrl, resolveAvatarSrc, useTheme } from "@/common";
 
+import { PiUsersBold } from "../../../../lib/icons";
 import type { RichActivity } from "../../../../lib/richActivity";
 import { nameTags } from "../../../lib/nameTags";
 import { useDirectory } from "../hooks/dmDirectory";
 import { useDirectoryUnread } from "../hooks/useDirectoryUnread";
 import { useServerPermissions } from "../hooks/usePermissions";
-import { UserStatus } from "../types/clients";
+import type { UserStatus } from "../types/clients";
 import { BotTag } from "./BotTag";
 import { GameIcon } from "./GameIcon";
 import { MEMBER_CARD_POPUP } from "./memberCard/memberCardContext";
@@ -26,6 +27,8 @@ type Role = string;
 
 export interface MemberInfo {
   serverUserId: string;
+  /** How many windows they share in voice, from the voice clients rather than the server's list. */
+  sharing?: number;
   nickname: string;
   avatarFileId?: string | null;
   /** Dominant colour of the avatar as #rrggbb. Null until it has been computed. */
@@ -72,6 +75,8 @@ export interface MemberInfo {
    * joined with. Verified and pinned client-side; the server never reads it.
    */
   dmKeyBinding?: string | null;
+  /** When a pending key reset takes over (GRYT-1886), or null. */
+  keyResetAt?: number | null;
   /** Their MLS person key, signed by the same identity. Checked the same way. */
   personKeyBinding?: string | null;
   /**
@@ -112,6 +117,10 @@ export interface AdminActions {
 }
 
 interface MemberSidebarProps {
+  /** The desktop panel passes its own; the phone's sheet keeps 240. */
+  width?: number;
+  /** Folded beside a call: avatars only, no headings. */
+  avatarsOnly?: boolean;
   members: MemberInfo[];
   currentConnectionId?: string;
   currentServerUserId?: string;
@@ -146,8 +155,10 @@ const MemberItem = ({
   cardOpen,
   onCardOpenChange,
   dmUnreadFor,
+  avatarOnly = false,
 }: {
   member: MemberInfo;
+  avatarOnly?: boolean;
   /** Already pulled into a readable band — see `readableRoleColor`. */
   roleColor?: string;
   /** Set when another member here shares the name (GRYT-1674). */
@@ -168,7 +179,9 @@ const MemberItem = ({
 }) => {
   const isSelf = member.serverUserId === currentServerUserId;
   const dmUnread = dmUnreadFor?.(member.serverUserId) ?? 0;
-  const { label: statusLabel, color: statusColor } = statusConfig[member.status];
+  const { label: inVoiceLabel, color: statusColor } = statusConfig[member.status];
+  let statusLabel = inVoiceLabel;
+  if (member.status === "in_voice" && member.sharing) statusLabel = member.sharing > 1 ? `Sharing ${member.sharing} windows` : "Sharing";
   const isOffline = member.status === "offline";
   const showStatusLine = member.status === "in_voice" || member.status === "afk";
   const rowCard = useRowCard(member, serverHost);
@@ -181,16 +194,16 @@ const MemberItem = ({
       isSelf={isSelf}
       canDisconnect={!!adminActions?.onDisconnectUser}
       isInVoice={member.hasJoinedChannel}
-      onDisconnectFromVoice={adminActions?.onDisconnectUser ? () => adminActions.onDisconnectUser!(member.serverUserId) : undefined}
+      onDisconnectFromVoice={adminActions?.onDisconnectUser ? () => adminActions.onDisconnectUser?.(member.serverUserId) : undefined}
       role={currentUserRole}
       targetRole={member.role}
       isServerMuted={member.isServerMuted}
       isServerDeafened={member.isServerDeafened}
-      onKick={adminActions?.onKickUser ? () => adminActions.onKickUser!(member.serverUserId) : undefined}
-      onBan={adminActions?.onBanUser ? () => adminActions.onBanUser!(member.serverUserId) : undefined}
-      onServerMute={adminActions?.onServerMuteUser ? (muted) => adminActions.onServerMuteUser!(member.serverUserId, muted) : undefined}
-      onServerDeafen={adminActions?.onServerDeafenUser ? (deafened) => adminActions.onServerDeafenUser!(member.serverUserId, deafened) : undefined}
-      onToggleRole={adminActions?.onToggleRole ? (role, hold) => adminActions.onToggleRole!(member.serverUserId, role, hold) : undefined}
+      onKick={adminActions?.onKickUser ? () => adminActions.onKickUser?.(member.serverUserId) : undefined}
+      onBan={adminActions?.onBanUser ? () => adminActions.onBanUser?.(member.serverUserId) : undefined}
+      onServerMute={adminActions?.onServerMuteUser ? (muted) => adminActions.onServerMuteUser?.(member.serverUserId, muted) : undefined}
+      onServerDeafen={adminActions?.onServerDeafenUser ? (deafened) => adminActions.onServerDeafenUser?.(member.serverUserId, deafened) : undefined}
+      onToggleRole={adminActions?.onToggleRole ? (role, hold) => adminActions.onToggleRole?.(member.serverUserId, role, hold) : undefined}
       targetRoles={member.roles}
       onOpenDm={onOpenDm && !isSelf ? () => onOpenDm(member.serverUserId) : undefined}
       /* Not on your own row: the server refuses blocking yourself, so the item
@@ -207,17 +220,20 @@ const MemberItem = ({
       }
     >
       <Popover.Root open={cardOpen} onOpenChange={(open) => onCardOpenChange(open)}>
-        {/* Clicking opens the card. Messaging is a button on it, and in the context menu. */}
-        <Popover.Trigger nativeButton={false} render={<div />}>
+        {/* Clicking opens the card; in the slim strip hovering does too, since there's no name to read. */}
+        <Popover.Trigger nativeButton={false} openOnHover={avatarOnly} delay={250} render={<div />}>
+          {/* In the slim strip a face is the whole row: no card behind it, no padding round it. */}
           <div
-            className="member-row member-row-clickable member-row-card"
+            className={avatarOnly ? "member-row-clickable rounded-full" : "member-row member-row-clickable member-row-card"}
+            aria-label={avatarOnly ? member.nickname : undefined}
             data-card-open={cardOpen || undefined}
-            data-row-card={rowCard.kind}
-            style={rowCard.style}
+            data-row-card={avatarOnly ? undefined : rowCard.kind}
+            style={avatarOnly ? undefined : rowCard.style}
           >
-        <div className="flex items-center gap-2 w-full">
+        <div className={avatarOnly ? "flex items-center justify-center w-full" : "flex items-center gap-2 w-full"}>
           <Avatar
             size="small"
+            className={avatarOnly ? "h-6 w-6 text-[10px]" : undefined}
             fallback={member.nickname[0]}
             src={resolveAvatarSrc(member.avatarFileId ? getUploadsFileUrl(serverHost, member.avatarFileId, { thumb: true }) : undefined, member.nickname, member.avatarWorn)}
             style={{
@@ -226,7 +242,7 @@ const MemberItem = ({
             }}
           />
 
-          <div className="flex flex-col" style={{ flex: 1, minWidth: 0, gap: "1px" }}>
+          {!avatarOnly && <div className="flex flex-col" style={{ flex: 1, minWidth: 0, gap: "1px" }}>
             <div className="flex items-center gap-1">
               {/* The role's colour, or the ordinary text colour when the role
                   has none. Offline keeps its role colour and is dimmed rather
@@ -285,7 +301,7 @@ const MemberItem = ({
                 </span>
               </span>
             )}
-          </div>
+          </div>}
         </div>
           {/* Their conversation's unread, on their row: the sidebar is the way
               into it now, so the count belongs where the way in is. */}
@@ -317,6 +333,8 @@ export const MemberSidebar = ({
   onToggleBlock,
   isBlocked,
   onReport,
+  width = 240,
+  avatarsOnly = false,
 }: MemberSidebarProps) => {
   const { roles } = useServerPermissions(serverHost);
   const { resolvedAppearance } = useTheme();
@@ -346,7 +364,10 @@ export const MemberSidebar = ({
 
   const setCardOpen = useCallback(
     (serverUserId: string, open: boolean) =>
-      setOpenCardFor((current) => (open ? serverUserId : current === serverUserId ? null : current)),
+      setOpenCardFor((current) => {
+        if (open) return serverUserId;
+        return current === serverUserId ? null : current;
+      }),
     [],
   );
 
@@ -362,15 +383,21 @@ export const MemberSidebar = ({
     return map;
   }, [roles, resolvedAppearance]);
   const nameTagMap = useMemo(() => nameTags(members), [members]);
+  const groupGap = avatarsOnly ? "mt-2" : "mt-4";
 
   return (
-    <div role="complementary" aria-label="Members" style={{ width: "240px",
+    <div role="complementary" aria-label="Members" style={{ width,
         background: "var(--gryt-neutral-3)",
         borderRadius: "var(--gryt-radius-lg)",
         height: "100%",
         overflow: "hidden",
       }}>
-      <div className="flex flex-col h-full p-3 gap-1">
+      <div className={avatarsOnly ? "flex flex-col h-full py-3 px-1 gap-1.5" : "flex flex-col h-full p-3 gap-1"}>
+        {avatarsOnly && (
+          <div className="flex justify-center text-gryt-muted" style={{ padding: "2px 0 6px" }}>
+            <PiUsersBold size={18} aria-hidden />
+          </div>
+        )}
         {/*
           No "Members — 12" above the groups (GRYT-904).
 
@@ -392,7 +419,7 @@ export const MemberSidebar = ({
               aria-labelledby={`members-${group.key}`}
               /* Space above each heading rather than between every row, so the
                  grouping is what the eye picks up. The first sits flush. */
-              className={index === 0 ? "" : "mt-4"}
+              className={index === 0 ? "" : groupGap}
             >
               {/* Sticky, because the whole point of a heading here is knowing
                   whose names you are looking at, and a list of thirty scrolls
@@ -400,7 +427,7 @@ export const MemberSidebar = ({
                   pass underneath rather than through. */}
               <h3
                 id={`members-${group.key}`}
-                className="text-xs font-bold uppercase tracking-wide text-gryt-muted"
+                className={avatarsOnly ? "sr-only" : "text-xs font-bold uppercase tracking-wide text-gryt-muted"}
                 style={{
                   position: "sticky",
                   top: 0,
@@ -429,6 +456,7 @@ export const MemberSidebar = ({
                     onToggleBlock={onToggleBlock}
                     isBlocked={isBlocked}
                     onReport={onReport}
+                    avatarOnly={avatarsOnly}
                     cardOpen={openCardFor === member.serverUserId}
                     onCardOpenChange={(open) => setCardOpen(member.serverUserId, open)}
                   />

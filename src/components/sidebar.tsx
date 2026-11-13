@@ -23,7 +23,7 @@ import { useSettings } from "@/settings";
 import { useEmbeddedServer } from "@/settings/src/hooks/useEmbeddedServer";
 import { useLanDiscovery } from "@/settings/src/hooks/useLanDiscovery";
 import { hostedServerAt, manageServerTab } from "@/settings/src/hostedServers";
-import {
+import type {
   Server,
   serverDetailsList as ServerDetailsListType,
   Servers,
@@ -68,8 +68,31 @@ async function copyServerAddress(host: string): Promise<void> {
   }
 }
 
+function ringStateOf(s: { isStarting: boolean; isSettling: boolean; isReconnecting: boolean; isConnecting: boolean }): ServerRingState {
+  if (s.isStarting) return "starting";
+  if (s.isSettling) return "settling";
+  if (s.isReconnecting) return "reconnecting";
+  return s.isConnecting ? "connecting" : "none";
+}
+
+function iconOpacity(s: { bright: boolean; isUnavailable: boolean; awaitingApproval: boolean; isReconnecting: boolean }) {
+  if (s.bright) return 1;
+  if (s.isUnavailable) return 0.45;
+  if (s.awaitingApproval) return 0.4;
+  return s.isReconnecting ? undefined : 0.5;
+}
+
+
+/** First letters and the ending only: yours to recognise, little to someone looking on. */
+function maskEmail(email: string): string {
+  const at = email.lastIndexOf("@");
+  if (at < 1) return email;
+  const domain = email.slice(at + 1);
+  const dot = domain.lastIndexOf(".");
+  return `${email[0]}•••@${domain[0] ?? ""}•••${dot > 0 ? domain.slice(dot) : ""}`;
+}
 export function Sidebar({ setShowAddServer }: SidebarProps) {
-  const { isSignedIn, login, logout } = useAccount();
+  const { isSignedIn, email, login, loginAnotherAccount, logout } = useAccount();
   const { nickname, avatarDataUrl, setShowSettings, openSettings } = useSettings();
   const { open: openReport } = useReportForm();
 
@@ -136,7 +159,7 @@ export function Sidebar({ setShowAddServer }: SidebarProps) {
 
   return (
     <div className="flex flex-col h-full gap-4 items-center justify-between" data-gryt="sidebar">
-      <div className="flex flex-col gap-4 pt-2">
+      <div className="flex flex-col gap-4 pt-2 items-center">
         {/* Above the servers, because a conversation is not one of them. The
             count is every unread direct message anywhere (GRYT-1134). */}
         <Tooltip title="Direct messages" side="right">
@@ -258,7 +281,10 @@ export function Sidebar({ setShowAddServer }: SidebarProps) {
                     pointerEvents: "none",
                   }}
                 >
-                  {newLanServers.length > 9 ? "9+" : newLanServers.length}
+                  {/* Trimmed to the digits' own height: centring the line box left them 0.8px high. */}
+                  <span style={{ textBoxTrim: "trim-both", textBoxEdge: "cap alphabetic" }}>
+                    {newLanServers.length > 9 ? "9+" : newLanServers.length}
+                  </span>
                 </div>
               )}
             </div>
@@ -322,9 +348,19 @@ export function Sidebar({ setShowAddServer }: SidebarProps) {
               <>
                 <Menu.Separator />
                 {isSignedIn ? (
-                  <Menu.Item className="text-gryt-danger" onClick={logout}>
-                    Sign out
-                  </Menu.Item>
+                  <>
+                    {email && (
+                      <div className="px-3 py-1 text-xs text-gryt-muted">
+                        Signed in as {maskEmail(email)}
+                      </div>
+                    )}
+                    <Menu.Item onClick={() => void loginAnotherAccount()}>
+                      Use another account
+                    </Menu.Item>
+                    <Menu.Item className="text-gryt-danger" onClick={logout}>
+                      Sign out
+                    </Menu.Item>
+                  </>
                 ) : (
                   <Menu.Item onClick={login}>
                     <div className="flex items-center gap-1">
@@ -439,15 +475,7 @@ function ServerItem({
    */
   const isSettling = !rawStatus && !settleExpired && !isStarting;
 
-  const ringState: ServerRingState = isStarting
-    ? "starting"
-    : isSettling
-      ? "settling"
-      : isReconnecting
-        ? "reconnecting"
-        : isConnecting
-          ? "connecting"
-          : "none";
+  const ringState = ringStateOf({ isStarting, isSettling, isReconnecting, isConnecting });
   /* Waiting on a moderator (GRYT-289). Not a connection state: the server is
      reachable and answering, it just has not let this person in yet. */
   const awaitingApproval = Boolean(servers[host]?.approvalRequestedAt);
@@ -490,16 +518,12 @@ function ServerItem({
                   style={{
                     // A server you just created keeps its colour. Greying it
                     // would say something is wrong; the ring says not ready.
-                    opacity:
-                      currentlyViewingServer?.host === host || isStarting
-                        ? 1
-                        : isUnavailable
-                        ? 0.45
-                        : awaitingApproval
-                        ? 0.4
-                        : isReconnecting
-                        ? undefined
-                        : 0.5,
+                    opacity: iconOpacity({
+                      bright: currentlyViewingServer?.host === host || isStarting,
+                      isUnavailable,
+                      awaitingApproval,
+                      isReconnecting,
+                    }),
                     filter:
                       !isStarting &&
                       (isUnavailable || isReconnecting || awaitingApproval)

@@ -1,5 +1,5 @@
 import { ContextMenu, Menu } from "@gryt/ui";
-import { useSyncExternalStore } from "react";
+import { type ReactNode, useSyncExternalStore } from "react";
 
 import {
   getGlobalLevel,
@@ -46,6 +46,7 @@ export function NotificationLevelMenu({
   scope,
   placement = null,
   inMenu = false,
+  icon,
 }: {
   host: string;
   scope: NotificationScope;
@@ -56,6 +57,7 @@ export function NotificationLevelMenu({
   placement?: NotificationScopePlacement | null;
   /** Inside a dropdown Menu, such as the chat header's ⋯, rather than a right-click one. */
   inMenu?: boolean;
+  icon?: ReactNode;
 }) {
   // The two share their parts' names and props, so one tree draws either.
   const M = (inMenu ? Menu : ContextMenu) as typeof ContextMenu;
@@ -75,9 +77,7 @@ export function NotificationLevelMenu({
           parentItemId: placement?.parentItemId ?? null,
           defaultLevel: getPlacement(host, scope.id)?.defaultLevel ?? null,
         })
-      : scope.kind === "folder"
-        ? (getOwnLevel(host, { kind: "server" }) ?? "all")
-        : "all";
+      : (scope.kind === "folder" && getOwnLevel(host, { kind: "server" })) || "all";
 
   /* What this scope currently comes out as: its own setting, else what it inherits. */
   const resolved: NotificationLevel = own ?? inherited;
@@ -96,7 +96,7 @@ export function NotificationLevelMenu({
 
   return (
     <M.SubmenuRoot>
-      <M.SubmenuTrigger>Notifications</M.SubmenuTrigger>
+      <M.SubmenuTrigger>{icon}Notifications</M.SubmenuTrigger>
       <M.Portal>
         <M.Positioner>
           <M.Popup>

@@ -9,6 +9,7 @@ import {
   electronLogout,
   electronRegister,
   electronRequiredAction,
+  type ElectronTokens,
   getStoredTokens,
   getValidElectronToken,
   RefreshRejectedError,
@@ -67,11 +68,26 @@ async function refreshElectronKeycloakToken(keycloak: Keycloak): Promise<void> {
   const stored = await getStoredTokens();
   if (!stored) throw new Error("No stored tokens for Electron refresh");
   const newTokens = await refreshTokens(stored.refresh_token);
-  keycloak.token = newTokens.access_token;
-  keycloak.refreshToken = newTokens.refresh_token;
-  keycloak.idToken = newTokens.id_token;
-  keycloak.tokenParsed = parseJwtPayload(newTokens.access_token) as typeof keycloak.tokenParsed;
+  applyTokens(keycloak, newTokens);
   console.log("[Auth:KC] Electron token refresh succeeded — new exp:", keycloak.tokenParsed?.exp);
+}
+
+function applyTokens(keycloak: Keycloak, tokens: ElectronTokens): void {
+  keycloak.token = tokens.access_token;
+  keycloak.refreshToken = tokens.refresh_token;
+  keycloak.idToken = tokens.id_token;
+  keycloak.tokenParsed = parseJwtPayload(tokens.access_token) as typeof keycloak.tokenParsed;
+  keycloak.authenticated = true;
+}
+
+/** The session to keep when startup couldn't sign in, or null when it's really over. */
+async function sessionToKeep(stored: ElectronTokens): Promise<ElectronTokens | null> {
+  try {
+    return await refreshTokens(stored.refresh_token);
+  } catch (e) {
+    // A thrown fetch (offline, timed out) is as much an outage as a 5xx. Only a rejected grant ends it.
+    return e instanceof RefreshRejectedError ? null : stored;
+  }
 }
 
 function scheduleProactiveRefresh(keycloak: Keycloak): void {
@@ -125,6 +141,12 @@ async function doProactiveRefresh(keycloak: Keycloak): Promise<void> {
     );
     refreshTimerHandle = setTimeout(() => doProactiveRefresh(keycloak), wait);
   }
+}
+
+/** The email of whoever is signed in, from the token, for "signed in as". Undefined when nobody is. */
+export function signedInEmail(): string | undefined {
+  const email = keycloakInstance?.tokenParsed?.email ?? keycloakInstance?.idTokenParsed?.email;
+  return typeof email === "string" ? email : undefined;
 }
 
 export function getKeycloak(): Keycloak {
@@ -237,8 +259,16 @@ async function initKeycloakForElectron(): Promise<KeycloakInitResult> {
       installKeycloakEventHandlers(keycloak, 'electron');
       return { keycloak, authenticated: !!keycloak.authenticated };
     } catch (e) {
-      console.warn("[Auth:KC] Init with stored tokens failed, falling through to unauthenticated:", e);
       if (generation !== initGeneration) throw e;
+      // keycloak.init forces a refresh, so without this an auth outage at launch signs everyone out.
+      const kept = await sessionToKeep(stored);
+      if (kept && generation === initGeneration) {
+        console.warn("[Auth:KC] Auth unreachable at startup — keeping the stored session and retrying:", e);
+        applyTokens(keycloak, kept);
+        installKeycloakEventHandlers(keycloak, 'electron-offline');
+        return { keycloak, authenticated: true };
+      }
+      console.warn("[Auth:KC] Init with stored tokens failed, falling through to unauthenticated:", e);
       keycloakInstance = null;
     }
   } else {
@@ -302,7 +332,8 @@ export async function initKeycloak(): Promise<KeycloakInitResult> {
     return initPromise;
   }
 
-  const env = isElectron() ? 'electron' : keepsOwnTokens() ? 'browser, linked' : 'browser';
+  const browserEnv = keepsOwnTokens() ? 'browser, linked' : 'browser';
+  const env = isElectron() ? 'electron' : browserEnv;
   console.log("[Auth:KC] initKeycloak: first call, env:", env);
   initPromise = keepsOwnTokens() ? initKeycloakForElectron() : initKeycloakForBrowser();
 
@@ -349,9 +380,10 @@ export async function retrySignIn(): Promise<SignInAttempt> {
   return unreachable ? "unavailable" : "signed-out";
 }
 
-export async function startLogin(redirectUri?: string): Promise<void> {
+/** `anotherAccount` shows the login form even while the browser is still signed in to Keycloak. */
+export async function startLogin(redirectUri?: string, anotherAccount = false): Promise<void> {
   if (isElectron()) {
-    await electronLogin();
+    await electronLogin(anotherAccount);
     // After successful login, re-init keycloak with the new tokens
     resetKeycloakInit();
     await initKeycloak();
@@ -360,7 +392,7 @@ export async function startLogin(redirectUri?: string): Promise<void> {
 
   const { keycloak } = await initKeycloak();
   const target = redirectUri || consumePreLoginUrl() || window.location.href;
-  await keycloak.login({ redirectUri: target });
+  await keycloak.login({ redirectUri: target, ...(anotherAccount ? { prompt: "login" as const } : {}) });
 }
 
 export async function startRegister(redirectUri?: string): Promise<void> {

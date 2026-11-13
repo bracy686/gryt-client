@@ -122,15 +122,7 @@ async function uploadAvatarToHost(host: string, file: Blob): Promise<{ avatarFil
     data = {};
   }
   if (!r.ok) {
-    const msg =
-      (typeof data?.message === "string" && data.message.trim().length > 0)
-        ? data.message
-        : (typeof data?.error === "string" && data.error.trim().length > 0)
-          ? data.error
-          : (raw && raw.trim().length > 0)
-            ? raw.trim()
-            : `HTTP ${r.status} ${r.statusText || ""}`.trim();
-    throw new Error(msg);
+    throw new Error(uploadError(data, raw, r));
   }
   return (data || {}) as { avatarFileId?: string; processing?: boolean };
 }
@@ -151,15 +143,7 @@ async function removeAvatarFromHost(host: string): Promise<void> {
     data = {};
   }
   if (!r.ok) {
-    const msg =
-      (typeof data?.message === "string" && data.message.trim().length > 0)
-        ? data.message
-        : (typeof data?.error === "string" && data.error.trim().length > 0)
-          ? data.error
-          : (raw && raw.trim().length > 0)
-            ? raw.trim()
-            : `HTTP ${r.status} ${r.statusText || ""}`.trim();
-    throw new Error(msg);
+    throw new Error(uploadError(data, raw, r));
   }
 }
 
@@ -259,7 +243,7 @@ function ProfileEditor({
           </div>
         </button>
         <span className="text-xs">
-          {uploading ? "Uploading..." : removing ? "Removing..." : "Click to change avatar"}
+          {avatarHint(uploading, removing)}
         </span>
       </div>
 
@@ -299,7 +283,7 @@ function ProfileEditor({
           <span className="text-xs">
             {scopedToServer
               ? `This is how other people on ${scopedToServer} see you.`
-              : "Used on servers you join from now on. Use Sync to apply it to servers you are already on."}
+              : "This is your main identity. It follows the first server in your sidebar, and servers you join get it. Use Sync to apply it to servers you're already on."}
           </span>
           <TextField
             placeholder="Enter a nickname"
@@ -362,6 +346,21 @@ function ActivityField() {
   );
 }
 
+function uploadError(data: Record<string, unknown>, raw: string, r: Response): string {
+  const said = [data.message, data.error].find((v): v is string => typeof v === "string" && v.trim().length > 0);
+  return said ?? (raw.trim() || `HTTP ${r.status} ${r.statusText || ""}`.trim());
+}
+
+function reasonText(reason: unknown, fallback: string): string {
+  if (reason instanceof Error) return reason.message;
+  return typeof reason === "string" ? reason : fallback;
+}
+
+function avatarHint(uploading: boolean, removing: boolean): string {
+  if (uploading) return "Uploading...";
+  return removing ? "Removing..." : "Click to change avatar";
+}
+
 export function ProfileSettings() {
   const userId = useUserId();
   const { nickname, setNickname, avatarDataUrl, setAvatarDataUrl, setAvatarFile } =
@@ -400,7 +399,8 @@ export function ProfileSettings() {
     return info.permissions.includes("upload_avatar_image");
   };
 
-  const processAndUpload = async (file: File, hosts: string[], worn: string | null) => {
+  const processAndUpload = async (file: File, requestedHosts: string[], worn: string | null) => {
+    let hosts = requestedHosts;
     const minAvatarMaxBytes = getAvatarMaxBytes(hosts);
 
     if (file.size > 25 * 1024 * 1024) {
@@ -483,7 +483,7 @@ export function ProfileSettings() {
       if (hosts.length === 0) {
         await setAvatarFile(uploadFile);
         setStoredWorn(worn);
-        toast("Avatar updated locally (no servers connected).");
+        toast("Avatar saved. Your servers get it next time you connect.");
         return;
       }
 
@@ -499,25 +499,23 @@ export function ProfileSettings() {
       results.forEach((r, idx) => {
         const host = hosts[idx];
         if (r.status !== "fulfilled") {
-          const reason =
-            r.reason instanceof Error
-              ? r.reason.message
-              : (typeof r.reason === "string" ? r.reason : "Upload failed");
+          const reason = reasonText(r.reason, "Upload failed");
           failed.push({ host, reason });
           return;
         }
 
         anySuccess = true;
         if (r.value.processing) anyProcessing = true;
-        if (r.value.avatarFileId) {
-          localStorage.setItem(`avatarFileId:${host}`, r.value.avatarFileId);
+        const { avatarFileId } = r.value;
+        if (avatarFileId) {
+          localStorage.setItem(`avatarFileId:${host}`, avatarFileId);
           if (uploadHash) localStorage.setItem(`avatarHash:${host}`, uploadHash);
           setServerProfiles(prev => ({
             ...prev,
             [host]: {
               ...prev[host],
-              avatarFileId: r.value.avatarFileId!,
-              avatarUrl: getUploadsFileUrl(host, r.value.avatarFileId!, isVideo ? { thumb: true } : undefined),
+              avatarFileId,
+              avatarUrl: getUploadsFileUrl(host, avatarFileId, isVideo ? { thumb: true } : undefined),
               avatarWorn: worn,
               avatarVideo: isVideo,
             },
@@ -536,10 +534,11 @@ export function ProfileSettings() {
       }
 
       if (failed.length > 0) {
+        console.warn("[Avatar] upload failed:", failed);
         if (hosts.length === 1) {
-          toast.error(`Avatar upload failed: ${failed[0].reason}`);
+          toast.error("Your avatar didn't upload. Try again in a moment.");
         } else {
-          toast.error(`Avatar upload failed for ${failed.length}/${hosts.length} servers`);
+          toast.error(`Your avatar didn't upload to ${failed.length} of your ${hosts.length} servers. Try again in a moment.`);
         }
       } else if (anySuccess && isVideo) {
         toast("Your video is uploaded. It shows on your card once the server has converted it.");
@@ -561,7 +560,7 @@ export function ProfileSettings() {
       if (hosts.length === 0) {
         await setAvatarFile(null);
         setAvatarDataUrl(null);
-        toast("Avatar removed locally.");
+        toast("Avatar removed. Your servers catch up next time you connect.");
         return;
       }
 
@@ -573,10 +572,7 @@ export function ProfileSettings() {
       results.forEach((r, idx) => {
         const host = hosts[idx];
         if (r.status !== "fulfilled") {
-          const reason =
-            r.reason instanceof Error
-              ? r.reason.message
-              : (typeof r.reason === "string" ? r.reason : "Remove failed");
+          const reason = reasonText(r.reason, "Remove failed");
           failed.push({ host, reason });
           return;
         }
@@ -600,7 +596,8 @@ export function ProfileSettings() {
       });
 
       if (!anySuccess) {
-        toast.error(failed.length === 1 ? `Remove avatar failed: ${failed[0].reason}` : "Remove avatar failed");
+        console.warn("[Avatar] remove failed:", failed);
+        toast.error("Your avatar couldn't be removed. Try again in a moment.");
         return;
       }
 
@@ -610,7 +607,7 @@ export function ProfileSettings() {
       }
 
       if (failed.length > 0) {
-        toast.error(`Removed avatar, but failed on ${failed.length}/${hosts.length} servers`);
+        toast.error(`Avatar removed, but ${failed.length} of your ${hosts.length} servers still show the old one.`);
       } else {
         toast.success("Avatar removed");
       }
@@ -749,9 +746,10 @@ export function ProfileSettings() {
         const p = serverProfiles[h];
         return p?.avatarVideo && p.avatarFileId && p.avatarFileId === localStorage.getItem(`avatarFileId:${h}`);
       });
+      const videoFileId = videoSource ? serverProfiles[videoSource]?.avatarFileId : undefined;
       const stored = userId ? await getStoredAvatar(userId).catch(() => null) : null;
-      if (videoSource) {
-        await copyVideoAvatar(videoSource, serverProfiles[videoSource]!.avatarFileId!, hosts);
+      if (videoSource && videoFileId) {
+        await copyVideoAvatar(videoSource, videoFileId, hosts);
       } else if (stored?.blob) {
         const minMax = getAvatarMaxBytes(hosts);
         let uploadFile: Blob = stored.blob;
@@ -775,15 +773,16 @@ export function ProfileSettings() {
             avatarFailed++;
             return;
           }
-          if (r.value.avatarFileId) {
-            localStorage.setItem(`avatarFileId:${host}`, r.value.avatarFileId);
+          const { avatarFileId } = r.value;
+          if (avatarFileId) {
+            localStorage.setItem(`avatarFileId:${host}`, avatarFileId);
             if (uploadHash) localStorage.setItem(`avatarHash:${host}`, uploadHash);
             setServerProfiles(prev => ({
               ...prev,
               [host]: {
                 ...prev[host],
-                avatarFileId: r.value.avatarFileId!,
-                avatarUrl: getUploadsFileUrl(host, r.value.avatarFileId!),
+                avatarFileId,
+                avatarUrl: getUploadsFileUrl(host, avatarFileId),
               },
             }));
           }

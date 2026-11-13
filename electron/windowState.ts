@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/ban-types -- IPC settings and persisted JSON are untrusted input validated here. */
 import type { BrowserWindow, Rectangle, Screen } from "electron";
 
 import {

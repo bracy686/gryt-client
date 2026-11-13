@@ -54,6 +54,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // False where the compositor manages windows itself, so the app draws no
   // titlebar either. Set by main from --gryt-no-window-chrome. GRYT-1062.
   drawsWindowChrome: !process.argv.includes("--gryt-no-window-chrome"),
+  computerName: process.argv.find((a) => a.startsWith("--gryt-computer-name="))?.slice("--gryt-computer-name=".length) || undefined,
 
   // The Mac App Store build: sandboxed, and updated by the store rather than by Gryt.
   macAppStore: process.mas === true,
@@ -66,8 +67,28 @@ contextBridge.exposeInMainWorld("electronAPI", {
     webFrame.setZoomFactor(factor);
   },
 
+  discordFileFetch(url: string) {
+    return ipcRenderer.invoke("discord-file-fetch", url);
+  },
   getAppVersion(): Promise<string> {
     return ipcRenderer.invoke("get-app-version");
+  },
+
+  // gryt-voice, the native voice engine's process (GRYT-1837).
+  voiceHelper: {
+    available: (): Promise<boolean> => ipcRenderer.invoke("voice-helper-available"),
+    start: (start: { addrs: string[]; session: number; key: string; effects: number[] }): Promise<boolean> =>
+      ipcRenderer.invoke("voice-helper-start", start),
+    send: (line: string) => ipcRenderer.send("voice-helper-send", line),
+    onReport(callback: (line: string) => void) {
+      const listener = (_event: unknown, line: string) => callback(line);
+      ipcRenderer.on("voice-helper-report", listener);
+      return () => ipcRenderer.removeListener("voice-helper-report", listener);
+    },
+    onExit(callback: () => void) {
+      ipcRenderer.on("voice-helper-exit", callback);
+      return () => ipcRenderer.removeListener("voice-helper-exit", callback);
+    },
   },
 
   onHotkeyDown(callback: (action: string) => void) {
@@ -255,10 +276,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return ipcRenderer.invoke("window:get-current-size");
   },
 
-  setSignedIn(signedIn: boolean) {
-    ipcRenderer.send("set-signed-in", signedIn);
-  },
-
   setVoiceState(state: {
     inVoice: boolean;
     muted: boolean;
@@ -351,6 +368,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.send("set-badge-count", count);
   },
 
+  flashFrame(on: boolean) {
+    ipcRenderer.send("flash-frame", on);
+  },
+
   /**
    * Repaint the native minimise/maximise/close buttons. Colours rather than a
    * theme name: only the renderer knows what the variables evaluate to.
@@ -373,6 +394,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
       name: string;
       thumbnail: string;
       appIcon: string;
+      own?: boolean;
       sourceType: "screen" | "window";
       width?: number;
       height?: number;
@@ -410,6 +432,18 @@ contextBridge.exposeInMainWorld("electronAPI", {
       callback(data);
     ipcRenderer.on("native-audio-data", handler);
     return () => ipcRenderer.removeListener("native-audio-data", handler);
+  },
+
+  /** Each capture on its own instead of the mix, tagged with the windows it is (GRYT-1905). */
+  setNativeAudioPerSource(on: boolean) {
+    ipcRenderer.send("native-audio-per-source", on);
+  },
+
+  onNativeAudioSourceData(callback: (sourceIds: string[], pcm: ArrayBuffer) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, data: { sourceIds: string[]; pcm: ArrayBuffer }) =>
+      callback(data.sourceIds, data.pcm);
+    ipcRenderer.on("native-audio-source-data", handler);
+    return () => ipcRenderer.removeListener("native-audio-source-data", handler);
   },
 
   onNativeAudioStopped(callback: () => void) {
@@ -529,6 +563,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   unsealSecret(sealed: string): Promise<string> {
     return ipcRenderer.invoke("secret:unseal", sealed);
+  },
+
+  readSyncedSeed(): Promise<string | null> {
+    return ipcRenderer.invoke("synced-seed:read");
+  },
+
+  writeSyncedSeed(hex: string): Promise<boolean> {
+    return ipcRenderer.invoke("synced-seed:write", hex);
   },
 
   // ── Global file store (backs localStorage) ─────────────────────

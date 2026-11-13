@@ -118,6 +118,9 @@ export function useServerState(): UseServerStateResult {
     currentChannelConnected,
     isConnected,
     isConnecting,
+    transportSpeaking,
+    transportUsers,
+    setTransportUserGains,
   } = useSFU();
 
   const lastActivityTimeRef = useRef(Date.now());
@@ -362,8 +365,11 @@ export function useServerState(): UseServerStateResult {
             if (isAFKRef.current) setIsAFK(false);
           }
         } else {
-          if (!client.streamID || !streamSources[client.streamID]) return;
-          speaking = isSpeaking(streamSources[client.streamID].analyser, 0.1);
+          const source = client.streamID ? streamSources[client.streamID] : undefined;
+          // Own-transport voice has no WebRTC stream to analyse; the transport says who it hears (GRYT-1830).
+          const heard = !!client.serverUserId && !!transportSpeaking?.has(client.serverUserId);
+          if (!source && !heard) return;
+          speaking = heard || (!!source && isSpeaking(source.analyser, 0.1));
         }
 
         const key = heldKey(clientID, client);
@@ -379,6 +385,7 @@ export function useServerState(): UseServerStateResult {
     microphoneBuffer.finalAnalyser,
     isTransmitting,
     streamSources,
+    transportSpeaking,
     heldClients,
     selfClientId,
     currentlyViewingServer,
@@ -458,13 +465,23 @@ export function useServerState(): UseServerStateResult {
     if (!currentlyViewingServer || !audioContext) return;
     const hostClients = clients[currentlyViewingServer.host] || {};
     const baseGain = sliderToOutputGain(outputVolume);
+    // The own transport takes the same per-user volume; its output gain already carries the rest.
+    setTransportUserGains?.(
+      new Map(
+        Object.values(hostClients).flatMap((c) =>
+          c.serverUserId && userVolumes[c.serverUserId] !== undefined ? [[c.serverUserId, userVolumes[c.serverUserId] / 100] as const] : [],
+        ),
+      ),
+    );
 
     Object.values(hostClients).forEach((client) => {
       if (!client.streamID || !streamSources[client.streamID]) return;
       const userVol = client.serverUserId
         ? (userVolumes[client.serverUserId] ?? 100) / 100
         : 1;
-      const finalGain = isDeafened ? 0 : baseGain * userVol;
+      // Heard over the own transport already: their WebRTC copy only exists for peers without it (GRYT-1831).
+      const duplicate = !!client.serverUserId && !!transportUsers?.has(client.serverUserId);
+      const finalGain = isDeafened || duplicate ? 0 : baseGain * userVol;
       streamSources[client.streamID].gain.gain.setValueAtTime(
         finalGain,
         audioContext.currentTime || 0
@@ -472,6 +489,8 @@ export function useServerState(): UseServerStateResult {
     });
   }, [
     userVolumes,
+    transportUsers,
+    setTransportUserGains,
     outputVolume,
     isDeafened,
     clients,

@@ -83,7 +83,7 @@ try {
   ].join("\n");
   const include = join(root, "fixture.nsh");
   writeFileSync(include, prefix);
-  const config = require("../electron-builder.config.cjs");
+  const config = (await import("../electron-builder.config.ts")).default;
   const nsis = { ...config.nsis, oneClick: false, allowToChangeInstallationDirectory: true,
     installerLanguages: ["zh_CN"], include, createDesktopShortcut: false, createStartMenuShortcut: false,
     installerIcon: join(repo, "build", "icon.ico"), uninstallerIcon: join(repo, "build", "icon.ico"),

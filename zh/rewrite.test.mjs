@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import ts from "typescript";
@@ -132,18 +131,33 @@ test("Chinese build marks the document language and fails on missing dictionary 
   }
 });
 
-test("Electron includes Chinese resources only for Chinese builds", () => {
-  const require = createRequire(import.meta.url);
-  const configPath = require.resolve("../electron-builder.config.cjs");
+test("Electron includes Chinese resources only for Chinese builds", async () => {
+  const configUrl = new URL("../electron-builder.config.ts", import.meta.url);
   const previous = process.env.GRYT_ZH;
   try {
     for (const enabled of [false, true]) {
       process.env.GRYT_ZH = enabled ? "1" : "0";
-      delete require.cache[configPath];
-      assert.equal(require(configPath).electronLanguages.includes("zh-CN"), enabled);
+      const config = (await import(`${configUrl.href}?zh-resource=${enabled}`)).default;
+      assert.equal(config.electronLanguages.includes("zh-CN"), enabled);
     }
   } finally {
-    delete require.cache[configPath];
     if (previous === undefined) delete process.env.GRYT_ZH; else process.env.GRYT_ZH = previous;
+  }
+});
+
+
+test("Discord import receipts translate both file counts", () => {
+  const out = actualTemplate("src/packages/socket/src/components/DiscordImportReceipt.tsx", "come over. All your messages");
+  for (const count of [1, 2]) {
+    assert.equal(evaluate(out, ["fmtCount", "state"], [String, { leftOut: Array(count) }]),
+      count + " 个文件未能导入。所有消息均已导入，缺少文件的消息已标明。");
+  }
+});
+
+test("sending a history copy has no English plural suffix", () => {
+  const out = actualTemplate("src/packages/socket/src/components/MemberIdentityCard.tsx", "your copy:");
+  for (const sent of [1, 2]) {
+    assert.equal(evaluate(out, ["member", "sent"], [{ nickname: "Alice" }, sent]),
+      "已向 Alice 发送你的副本：" + sent + " 条消息");
   }
 });

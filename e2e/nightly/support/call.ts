@@ -8,6 +8,18 @@ export interface Guest {
   name: string;
   /** Every WebSocket frame the page sent or received, as text. */
   frames: string[];
+  /** Bytes received on the SFU's audio WebSocket, the fallback when WebTransport can't connect. */
+  audioSocket: { received: number };
+}
+
+/** Counts what arrives on `/audio-ws`. WebTransport audio isn't visible to Playwright, so a runner that gets QUIC through is not counted. */
+export function recordAudioSocket(page: Page): { received: number } {
+  const audio = { received: 0 };
+  page.on("websocket", (socket) => {
+    if (!new URL(socket.url()).pathname.endsWith("/audio-ws")) return;
+    socket.on("framereceived", ({ payload }) => (audio.received += payload.length));
+  });
+  return audio;
 }
 
 /** The default server's voice channel, which test.gryt.chat still has. */
@@ -31,7 +43,7 @@ function hittable(locator: Locator): Promise<boolean> {
   });
 }
 
-/** Joining leaves the panel minimized when the window is new, and pressing the channel again opens it. */
+/** Joining opens the panel; pressing the channel again opens it if something hid it since. */
 export async function openVoicePanel(page: Page): Promise<void> {
   if (!(await hittable(leaveVoiceButton(page)))) {
     await page.getByRole("button", { name: VOICE_CHANNEL, exact: true }).click();
@@ -56,26 +68,37 @@ export async function leaveVoice(page: Page): Promise<void> {
 
 export async function turnCameraOn(guest: Guest): Promise<void> {
   await callButton(guest.page, "Turn camera on").click();
-  const start = guest.page.getByRole("button", { name: "Start Camera" });
-  await expect(start, "the camera preview never got a stream").toBeEnabled();
-  await start.click();
-  await expect(callButton(guest.page, "Camera is on")).toBeVisible();
+  // The preview opens first unless "preview first" is off, and its own button turns the camera on.
+  const start = guest.page.getByRole("dialog", { name: "Turn your camera on" }).getByRole("button", { name: "Turn camera on" });
+  await expect(start.or(callButton(guest.page, "Turn camera off")).first()).toBeVisible();
+  if (await start.count()) {
+    await expect(start, "the camera preview never got a stream").toBeEnabled();
+    await start.click();
+  }
+  await expect(callButton(guest.page, "Turn camera off")).toBeVisible();
 }
 
 export async function turnCameraOff(guest: Guest): Promise<void> {
-  await callButton(guest.page, "Camera is on").click();
-  await guest.page.getByRole("menuitem", { name: "Turn camera off", exact: true }).click();
+  await callButton(guest.page, "Turn camera off").click();
   await expect(callButton(guest.page, "Turn camera on")).toBeVisible();
 }
 
 /** In a browser the button calls getDisplayMedia straight away, and Chrome's fake capture answers it. */
 export async function shareScreen(guest: Guest): Promise<void> {
   await callButton(guest.page, "Share your screen").click();
-  await expect(callButton(guest.page, "Sharing your screen")).toBeVisible();
+  await expect(callButton(guest.page, "What you share")).toBeVisible();
+}
+
+/** Somebody else's share waits for a click before it plays (GRYT-1681), so the viewer presses Watch. */
+export async function watchShare(page: Page, sharer: string): Promise<void> {
+  const waiting = page.locator('[data-gryt="share-unwatched"]').filter({ hasText: `${sharer}'s Screen` });
+  // A share again under the first one's stream id (GRYT-1319) counts as watched already, so it plays with no button.
+  await expect(waiting.or(tileVideo(page, `${sharer}'s Screen`)).first()).toBeAttached();
+  if (await waiting.count()) await waiting.getByRole("button", { name: "Watch", exact: true }).click();
 }
 
 export async function stopSharing(guest: Guest): Promise<void> {
-  await callButton(guest.page, "Sharing your screen").click();
+  await callButton(guest.page, "What you share").click();
   await guest.page.getByRole("menuitem", { name: "Stop sharing", exact: true }).click();
   await expect(callButton(guest.page, "Share your screen")).toBeVisible();
 }
@@ -114,12 +137,11 @@ export function playedStream(video: Locator): Promise<string | null> {
   return video.evaluate((v: HTMLVideoElement) => (v.srcObject as MediaStream | null)?.id ?? null);
 }
 
-/** Some audio arrives from the SFU, and then more: a connection that stalled after the first packet would pass a single read. */
+/** Some audio arrives from the SFU, and then more. Over WebRTC or the audio WebSocket: once everyone is on Gryt's own transport the WebRTC copy stops (GRYT-1853). */
 export async function expectAudioArriving(guest: Guest): Promise<void> {
-  const start = (await peerStats(guest.page)).audioBytesReceived;
-  await expect
-    .poll(async () => (await peerStats(guest.page)).audioBytesReceived, `${guest.name} received no audio`)
-    .toBeGreaterThan(start + 1500);
+  const received = async () => (await peerStats(guest.page)).audioBytesReceived + guest.audioSocket.received;
+  const start = await received();
+  await expect.poll(received, `${guest.name} received no audio`).toBeGreaterThan(start + 1500);
 }
 
 export async function expectFramesDecoded(guest: Guest, what: string): Promise<void> {

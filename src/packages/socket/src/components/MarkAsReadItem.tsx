@@ -1,4 +1,4 @@
-import { ContextMenu } from "@gryt/ui";
+import { ContextMenu, Menu } from "@gryt/ui";
 
 import {
   clearConversationThreadMentions,
@@ -6,6 +6,7 @@ import {
   clearServerMentions,
   clearServerThreadMentions,
   clearServerThreadUnread,
+  getUnreadSnapshot,
   markChannelRead,
   markConversationThreadsRead,
   markServerRead,
@@ -14,6 +15,7 @@ import {
   useUnreadTracker,
 } from "@/common";
 
+import { PiChecksBold } from "../../../../lib/icons";
 import { useSockets } from "../hooks/useSockets";
 
 /**
@@ -29,7 +31,8 @@ export type MarkReadScope =
  * Say you are done with a server, folder, channel or DM. Four counts sit behind
  * one badge, two the client's and two the server's, so each scope clears both.
  */
-export function MarkAsReadItem({ host, scope }: { host: string; scope: MarkReadScope }) {
+export function MarkAsReadItem({ host, scope, inMenu = false }: { host: string; scope: MarkReadScope; inMenu?: boolean }) {
+  const M = (inMenu ? Menu : ContextMenu) as typeof ContextMenu;
   const { sockets } = useSockets();
   const { serverUnreadCount, channelUnreadCount } = useUnreadTracker();
   const { serverMentionCount, conversationMentionCount } = useMentionTracker();
@@ -42,11 +45,12 @@ export function MarkAsReadItem({ host, scope }: { host: string; scope: MarkReadS
     conversationMentionCount(host, id) +
     conversationThreadUnreadCount(host, id);
 
-  const waiting = scope.kind === "server"
-    ? serverUnreadCount(host) + serverMentionCount(host) + serverThreadUnreadCount(host)
-    : scope.kind === "folder"
-      ? scope.channelIds.reduce((n, id) => n + conversationCount(id), 0)
-      : conversationCount(scope.id);
+  const waitingIn = (s: MarkReadScope): number => {
+    if (s.kind === "server") return serverUnreadCount(host) + serverMentionCount(host) + serverThreadUnreadCount(host);
+    if (s.kind === "folder") return s.channelIds.reduce((n, id) => n + conversationCount(id), 0);
+    return conversationCount(s.id);
+  };
+  const waiting = waitingIn(scope);
 
   const readConversation = (id: string) => {
     markChannelRead(host, id);
@@ -56,10 +60,12 @@ export function MarkAsReadItem({ host, scope }: { host: string; scope: MarkReadS
     /* Threads and all, which opening the channel deliberately does not do
        (GRYT-1014). This is somebody saying they are finished with it. */
     sockets[host]?.emit("mentions:seen", { conversationId: id, includeThreads: true });
+    sockets[host]?.emit("read:set", { conversationId: id });
   };
 
   const onClick = () => {
     if (scope.kind === "server") {
+      for (const id of getUnreadSnapshot().get(host)?.keys() ?? []) sockets[host]?.emit("read:set", { conversationId: id });
       markServerRead(host);
       clearServerMentions(host);
       clearServerThreadUnread(host);
@@ -79,8 +85,9 @@ export function MarkAsReadItem({ host, scope }: { host: string; scope: MarkReadS
   };
 
   return (
-    <ContextMenu.Item disabled={waiting === 0} onClick={onClick}>
+    <M.Item disabled={waiting === 0} onClick={onClick}>
+      {inMenu && <PiChecksBold size={16} />}
       Mark as read
-    </ContextMenu.Item>
+    </M.Item>
   );
 }

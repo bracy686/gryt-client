@@ -6,6 +6,7 @@ import {
   type MlsDecryptedMessage,
   type MlsDeviceRecord,
   type MlsDmContent,
+  type MlsDmDiagnostics,
   type MlsDmDriver,
   type MlsGroupPosition,
   type MlsLogEntry,
@@ -15,9 +16,10 @@ import {
   type MlsServerCapability,
   type MlsStateStore,
   type MlsWelcomeDelivery,
+  readImportBundle,
   readMlsDmContent,
 } from "@gryt/core";
-import { generateMlsKeyPackage, type PeerPinStore } from "@gryt/crypto";
+import { generateMlsKeyPackage, openAttachment, type PeerPinStore } from "@gryt/crypto";
 
 import type { ArchivedMessage, MessageArchive } from "@/common";
 
@@ -30,6 +32,13 @@ import { type AckSocket, asBytes, socketMlsTransport } from "./transport.ts";
  * into the archive. The app decides nothing about MLS here; the driver does.
  */
 
+/** The uploads a send carries, so the server lets the other side fetch them. */
+function attachmentIdsOf(content: MlsDmContent): string[] {
+  if (content.type === "message" || content.type === "import_bundle") return Object.keys(content.attachments ?? {});
+  if (content.type === "import") return content.entries.flatMap((e) => Object.keys(e.attachments ?? {}));
+  return [];
+}
+
 export interface SessionSocket extends AckSocket {
   on(event: string, listener: (...args: never[]) => void): unknown;
   off(event: string, listener: (...args: never[]) => void): unknown;
@@ -41,12 +50,14 @@ export interface ConversationProblems {
   undecryptable: number;
   /** This device is out of the group and can't read new messages until it's back. `device_removed`
       means out of every group on this server, since the server removed the device (GRYT-1555). */
-  lost: "removed" | "out_of_sync" | "gap" | "device_removed" | null;
+  lost: "removed" | "out_of_sync" | "gap" | "not_added" | "other_identity" | "too_many_devices" | "device_removed" | null;
 }
 
 const NO_PROBLEMS: ConversationProblems = { undecryptable: 0, lost: null };
 
 /** Hand the UI a turn every few messages, so a long catch-up doesn't freeze it. */
+const BUNDLE_TRIES = 5;
+const BUNDLE_RETRY_MS = 2_000;
 const YIELD_EVERY = 8;
 
 export interface ArchivedMlsMessage {
@@ -65,6 +76,8 @@ export interface MlsSessionOptions {
   serverUserId: string;
   capability: MlsServerCapability | null;
   getAccessToken: () => Promise<string | null>;
+  /** An upload's sealed bytes, for an import that came as one file. */
+  fetchUpload: (fileId: string) => Promise<Uint8Array>;
   messages: MessageArchive;
   store: MlsStateStore;
   pinStore: PeerPinStore;
@@ -95,6 +108,7 @@ export interface MlsSession {
   problems(conversationId: string): ConversationProblems;
   /** Your devices on this server, named from their certificates where a group shows them. */
   ownDevices(): Promise<MlsOwnDevice[]>;
+  diagnose(conversationId: string): Promise<MlsDmDiagnostics>;
   /** Sends are held until the server is back, for a "Waiting for the server" label. */
   waiting(): boolean;
   /** One of your own devices, off the server. Peers drop it from each DM on their next pass. */
@@ -105,6 +119,8 @@ export interface MlsSession {
   addOwnDevice(deviceId: string, options?: MlsAddOwnDeviceOptions): Promise<MlsOwnDeviceAdd[]>;
   /** Where each group's log stands now, which is what a pairing's history snapshot covers. */
   groupPositions(): Promise<MlsGroupPosition[]>;
+  /** This device isn't in that DM's group: asks the other members' apps to add it. */
+  requestAdd(conversationId: string): Promise<void>;
   /** Something a DM screen shows may have moved: a mode, a problem, a join. */
   onChange(listener: (conversationId: string | null) => void): () => void;
   /** Stops taking work. Resolves once what was running is done, so the next session can't overlap it. */
@@ -215,8 +231,31 @@ export function createMlsSession(options: MlsSessionOptions): MlsSession {
     if (record) listener({ conversationId, seq, epoch, record });
   }
 
-  const apply = (conversationId: string, senderId: string, senderDeviceId: string | undefined, content: MlsDmContent, at: number) =>
-    applyMlsContent(messages, { scope: storeScope, conversationId, senderId, senderDeviceId, content, at });
+
+  /** An import's sealed file, as the `import` it stands for. Null when it can't be fetched or read. */
+  async function openBundle(conversationId: string, content: Extract<MlsDmContent, { type: "import_bundle" }>): Promise<Extract<MlsDmContent, { type: "import" }> | null> {
+    const [[fileId, meta]] = Object.entries(content.attachments);
+    for (let attempt = 0; attempt < BUNDLE_TRIES; attempt++) {
+      try {
+        const ciphertext = await options.fetchUpload(fileId);
+        const entries = readImportBundle(openAttachment({ ciphertext, conversationId, meta }));
+        return entries?.length ? { type: "import", id: content.id, source: content.source, entries } : null;
+      } catch (e) {
+        console.warn("[MLS] An import's file didn't open", attempt, e);
+        await new Promise((r) => setTimeout(r, BUNDLE_RETRY_MS));
+      }
+    }
+    return null;
+  }
+
+  const apply = async (conversationId: string, senderId: string, senderDeviceId: string | undefined, content: MlsDmContent, at: number) => {
+    const opened = content.type === "import_bundle" ? await openBundle(conversationId, content) : content;
+    if (!opened) {
+      setProblems(conversationId, { undecryptable: (problems.get(conversationId)?.undecryptable ?? 0) + 1 });
+      return;
+    }
+    await applyMlsContent(messages, { scope: storeScope, conversationId, senderId, senderDeviceId, content: opened, at });
+  };
 
   const driver: MlsDmDriver = createMlsDmDriver({
     transport,
@@ -249,6 +288,8 @@ export function createMlsSession(options: MlsSessionOptions): MlsSession {
 
   let running: Promise<void> | null = null;
   let again = false;
+  /** The server refused to register this device: the account is at its device limit. */
+  let tooManyDevices = false;
 
   function start(): Promise<void> {
     if (disposed) return Promise.resolve();
@@ -261,7 +302,9 @@ export function createMlsSession(options: MlsSessionOptions): MlsSession {
         again = false;
         try {
           await driver.start();
+          tooManyDevices = false;
         } catch (e) {
+          tooManyDevices = (e as { refusal?: { error?: string } })?.refusal?.error === "too_many_devices";
           console.warn("[MLS] Catching up failed:", e);
         }
       } while (again && !disposed);
@@ -288,6 +331,8 @@ export function createMlsSession(options: MlsSessionOptions): MlsSession {
       changed(null);
       if (push?.serverUserId === self) options.onOwnDevicesChanged?.();
     });
+  const onAddRequested = (push: { conversationId: string; serverUserId: string; deviceId: string }) =>
+    safely("A request to add a device", () => driver.handleAddRequest(push));
   const onOpened = (conversation: { conversation_id: string; members: { server_user_id: string }[] }) => {
     if (!conversation?.conversation_id) return;
     recency = [conversation.conversation_id, ...recency.filter((id) => id !== conversation.conversation_id)];
@@ -301,6 +346,7 @@ export function createMlsSession(options: MlsSessionOptions): MlsSession {
   socket.on("mls:message", onEntry);
   socket.on("mls:welcome", onWelcome);
   socket.on("mls:devices:changed", onDevices);
+  socket.on("mls:add:requested", onAddRequested);
   socket.on("dm:opened", onOpened);
   socket.on("dm:list", onListed);
 
@@ -316,7 +362,7 @@ export function createMlsSession(options: MlsSessionOptions): MlsSession {
       const job = previous.catch(() => undefined).then(async () => {
         // Only a new message leaves a line for apps from before MLS (GRYT-1517).
         placeholders.set(conversationId, content.type === "message");
-        const attachmentIds = content.type === "message" ? Object.keys(content.attachments ?? {}) : [];
+        const attachmentIds = attachmentIdsOf(content);
         let seq: number;
         try {
           ({ seq } = await driver.send(conversationId, peer, encodeMlsDmContent(content), { attachmentIds }));
@@ -335,10 +381,17 @@ export function createMlsSession(options: MlsSessionOptions): MlsSession {
       recency = list.map((c) => c.conversation_id);
       for (const c of list) members.set(c.conversation_id, c.members.map((m) => m.server_user_id));
     },
-    problems: (conversationId) => problems.get(conversationId) ?? NO_PROBLEMS,
+    problems(conversationId) {
+      const found = problems.get(conversationId) ?? NO_PROBLEMS;
+      return tooManyDevices && !found.lost ? { ...found, lost: "too_many_devices" } : found;
+    },
     ownDevices() {
       if (disposed) return Promise.reject(new Error("This connection has closed."));
       return track(driver.ownDevices());
+    },
+    diagnose(conversationId) {
+      if (disposed) return Promise.reject(new Error("This connection has closed."));
+      return track(driver.diagnose(conversationId));
     },
     waiting: () => waiting,
     removeOwnDevice(deviceId) {
@@ -355,6 +408,10 @@ export function createMlsSession(options: MlsSessionOptions): MlsSession {
       if (disposed) return Promise.reject(new Error("This connection has closed."));
       return track(driver.groupPositions());
     },
+    requestAdd(conversationId) {
+      if (disposed) return Promise.reject(new Error("This connection has closed."));
+      return track(driver.requestAdd(conversationId));
+    },
     onChange(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -367,6 +424,7 @@ export function createMlsSession(options: MlsSessionOptions): MlsSession {
       socket.off("mls:message", onEntry);
       socket.off("mls:welcome", onWelcome);
       socket.off("mls:devices:changed", onDevices);
+      socket.off("mls:add:requested", onAddRequested);
       socket.off("dm:opened", onOpened);
       socket.off("dm:list", onListed);
       await Promise.allSettled([...inFlight]);

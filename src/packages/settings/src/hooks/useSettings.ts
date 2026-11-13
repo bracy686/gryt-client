@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 
-import { singletonHook } from "@/common";
+import { IS_BETA_BUILD, singletonHook } from "@/common";
 import {
   clearStoredAvatar,
   getStoredAvatar,
@@ -87,9 +87,10 @@ function useSettingsHook() {
   const [cameraID, setCameraID] = useState("");
   const [cameraQuality, setCameraQuality] = useState("native");
   const [cameraMirrored, setCameraMirrored] = useState(true);
-  const [faceFramingEnabled, setFaceFramingEnabled] = useState(false);
+  const [faceFramingEnabled, setFaceFramingEnabled] = useState(true);
+  const [cameraPreviewFirst, setCameraPreviewFirst] = useState(true);
   const [voiceTileLayout, setVoiceTileLayout] =
-    useState<VoiceTileLayout>("meet");
+    useState<VoiceTileLayout>("bento");
   const [voiceTwoPersonLayout, setVoiceTwoPersonLayout] =
     useState<VoiceTwoPersonLayout>("hero");
   const [devFakeParticipants, setDevFakeParticipants] = useState(0);
@@ -105,7 +106,9 @@ function useSettingsHook() {
 
   const [screenShareQuality, setScreenShareQuality] = useState("native");
   const [screenShareFps, setScreenShareFps] = useState(30);
-  const [experimentalScreenShare, setExperimentalScreenShare] = useState(false);
+  /* On in beta, as the own voice transport and the native engine already are: the
+     options are there to be tried, and a stored choice still wins over this. */
+  const [experimentalScreenShare, setExperimentalScreenShare] = useState(IS_BETA_BUILD);
   const [screenShareGamingMode, setScreenShareGamingModeState] = useState(true);
   const [screenShareCodec, setScreenShareCodecState] = useState<ScreenShareCodec>("auto");
   const [screenShareMaxBitrate, setScreenShareMaxBitrateState] = useState(0);
@@ -160,9 +163,10 @@ function useSettingsHook() {
       setCameraID(getUserValue("cameraID", ""));
       setCameraQuality(getUserValue("cameraQuality", "native"));
       setCameraMirrored(getUserValue("cameraMirrored", true));
-      setFaceFramingEnabled(getUserValue("faceFramingEnabled", false));
+      setFaceFramingEnabled(getUserValue("faceFramingEnabled", true));
+      setCameraPreviewFirst(getUserValue("cameraPreviewFirst", true));
       setVoiceTileLayout(
-        getUserValue<VoiceTileLayout>("voiceTileLayout", "meet"),
+        getUserValue<VoiceTileLayout>("voiceTileLayout", "bento"),
       );
       setVoiceTwoPersonLayout(
         getUserValue<VoiceTwoPersonLayout>("voiceTwoPersonLayout", "hero"),
@@ -179,7 +183,7 @@ function useSettingsHook() {
       setCameraCodecState(getUserValue<VideoCodec>("cameraCodec", "auto"));
       setScreenShareQuality(getUserValue("screenShareQuality", "native"));
       setScreenShareFps(getUserValue("screenShareFps", 30));
-      setExperimentalScreenShare(getUserValue("experimentalScreenShare", false));
+      setExperimentalScreenShare(getUserValue("experimentalScreenShare", IS_BETA_BUILD));
       setScreenShareGamingModeState(getUserValue("screenShareGamingMode", true));
       setScreenShareCodecState(getUserValue<ScreenShareCodec>("screenShareCodec", "auto"));
       setScreenShareMaxBitrateState(getUserValue("screenShareMaxBitrate", 0));
@@ -376,6 +380,11 @@ function useSettingsHook() {
   function updateFaceFramingEnabled(enabled: boolean) {
     setFaceFramingEnabled(enabled);
     setUserValue("faceFramingEnabled", enabled);
+  }
+
+  function updateCameraPreviewFirst(enabled: boolean) {
+    setCameraPreviewFirst(enabled);
+    setUserValue("cameraPreviewFirst", enabled);
   }
 
   function updateDevFakeParticipants(count: number) {
@@ -633,6 +642,8 @@ function useSettingsHook() {
     setCameraMirrored: updateCameraMirrored,
     faceFramingEnabled,
     setFaceFramingEnabled: updateFaceFramingEnabled,
+    cameraPreviewFirst,
+    setCameraPreviewFirst: updateCameraPreviewFirst,
     voiceTileLayout,
     setVoiceTileLayout: updateVoiceTileLayout,
     voiceTwoPersonLayout,

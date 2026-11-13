@@ -1,6 +1,6 @@
 import { Avatar, Popover, Tooltip } from "@gryt/ui";
-import { AnimatePresence, motion } from "motion/react";
-import { type CSSProperties, forwardRef, memo, useCallback, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { AnimatePresence, motion, useIsPresent } from "motion/react";
+import { type CSSProperties, forwardRef, memo, type ReactNode, useCallback, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import { type MessageStyle, useTheme } from "@/common";
 
@@ -36,6 +36,29 @@ import { NameTag } from "./NameTag";
 import { PollCard } from "./PollCard";
 import { ReplyPreviewText } from "./ReplyPreviewText";
 import { UnreadIndicator } from "./UnreadIndicator";
+
+/** Which of the five row shapes a message draws as. */
+function rowKindOf(meta: MessageMeta, look: MessageStyle): "added" | "system" | "compact" | "first" | "follow-on" {
+  if (meta.systemEvent === "added") return "added";
+  if (meta.isSystem) return "system";
+  if (look === "compact") return "compact";
+  return meta.isFirstInGroup ? "first" : "follow-on";
+}
+
+function sendStateOf(m: { failed?: boolean; waiting?: boolean; pending?: boolean }): "failed" | "waiting" | "pending" | undefined {
+  if (m.failed) return "failed";
+  if (!m.pending) return undefined;
+  return m.waiting ? "waiting" : "pending";
+}
+
+function addedHistoryLine(you: boolean, encrypted: boolean, added: string): string {
+  if (you && encrypted) {
+    return "You\u2019ll see what\u2019s said from now on. Messages from before you were added stay with the people who were there, since they were encrypted for them.";
+  }
+  if (you) return "This conversation isn\u2019t encrypted, so you can read what was said before you were added.";
+  if (encrypted) return `${added} only sees messages from here on. What was said before stays encrypted for the people who were here.`;
+  return `This conversation isn\u2019t encrypted, so ${added} can read what was said before.`;
+}
 
 export interface MessageMeta {
   isFirstInGroup: boolean;
@@ -194,9 +217,8 @@ export const MessageRow = memo(forwardRef<HTMLDivElement, MessageRowProps>(({
   // Off in encrypted conversations for now: fetching one tells the server the link (decision 13).
   const showsPreviews = !mls && can("use_link_previews");
 
-  const bgColor = (isHovered || isReactionPickerOpen || isCtxMenuOpen)
-    ? "var(--gryt-neutral-4)"
-    : isMentioned ? "var(--gryt-accent-a3)" : "transparent";
+  const restingBg = isMentioned ? "var(--gryt-accent-a3)" : "transparent";
+  const bgColor = isHovered || isReactionPickerOpen || isCtxMenuOpen ? "var(--gryt-neutral-4)" : restingBg;
 
   const messageActions: MessageActions = {
     messageText: m.text,
@@ -274,7 +296,8 @@ export const MessageRow = memo(forwardRef<HTMLDivElement, MessageRowProps>(({
   const highlighted = isHovered || isReactionPickerOpen || isCtxMenuOpen;
   const nameColor = meta.roleColor ?? (meta.isSelf ? "var(--gryt-accent-11)" : "var(--gryt-neutral-12)");
   // Bubbles hug their text, so the column lines them up on the side they belong to.
-  const bubbleAlign = look === "bubbles" ? (alignRight ? "flex-end" : "flex-start") : undefined;
+  const bubbleSide = alignRight ? "flex-end" : "flex-start";
+  const bubbleAlign = look === "bubbles" ? bubbleSide : undefined;
 
   const avatarNode = (
     <>
@@ -354,9 +377,21 @@ export const MessageRow = memo(forwardRef<HTMLDivElement, MessageRowProps>(({
                     BOT
                   </span>
                 )}
-                <MessageTimestamp date={toDate(m.created_at)} />
-                {meta.isFirstEdited && (
-                  <Tooltip title={`Edited ${new Date(m.edited_at!).toLocaleString()}`}>
+                <MessageTimestamp date={toDate(m.created_at)} receivedAt={m.received_at} />
+                {m.imported_from && (
+                  <Tooltip title="Imported from Discord">
+                    <span className="discord-import-tag">Discord</span>
+                  </Tooltip>
+                )}
+                {m.shared_by && (
+                  <Tooltip title={`From ${m.shared_by}\u2019s copy of this conversation`}>
+                    <span style={{ fontSize: 10, cursor: "default", whiteSpace: "nowrap", userSelect: "none", color: "var(--gryt-neutral-8)" }}>
+                      shared by {m.shared_by}
+                    </span>
+                  </Tooltip>
+                )}
+                {meta.isFirstEdited && m.edited_at && (
+                  <Tooltip title={`Edited ${new Date(m.edited_at).toLocaleString()}`}>
                     <span style={{ fontSize: 10, cursor: "default", whiteSpace: "nowrap", userSelect: "none", color: "var(--gryt-neutral-8)" }}>
                       (edited)
                     </span>
@@ -408,6 +443,8 @@ export const MessageRow = memo(forwardRef<HTMLDivElement, MessageRowProps>(({
                 own={isOwnMessage}
                 highlighted={highlighted}
                 onMore={handleMore}
+                onThread={messageActions.onOpenThread ?? messageActions.onStartThread}
+                threadLabel={messageActions.onOpenThread ? "Open thread" : "Start thread"}
                 messageActions={messageActions}
                 threadUnread={threadUnread}
                 threadMentions={threadMentions}
@@ -424,12 +461,13 @@ export const MessageRow = memo(forwardRef<HTMLDivElement, MessageRowProps>(({
               />
   );
 
+  const rowKind = rowKindOf(meta, look);
   const content = (
     <>
       {meta.showNewMessageDivider && <NewMessagesDivider />}
       {meta.dayBreak && <DateSeparator date={meta.dayBreak} />}
 
-      {meta.systemEvent === "added" ? (
+      {rowKind === "added" && (
         <AddedLine
           text={m.text ?? ""}
           at={m.created_at}
@@ -440,7 +478,8 @@ export const MessageRow = memo(forwardRef<HTMLDivElement, MessageRowProps>(({
           rowRef={rowRef}
           messageId={m.message_id}
         />
-      ) : meta.isSystem ? (
+      )}
+      {rowKind === "system" && (
         /* An event, not a message: one quiet row keeping the left edge every
            message shares, and a right-click carrying Delete only (GRYT-896, GRYT-908). */
         look === "compact" ? (
@@ -495,13 +534,14 @@ export const MessageRow = memo(forwardRef<HTMLDivElement, MessageRowProps>(({
               />
             </span>
             <span className="text-xs" style={{ opacity: 0.75 }}>
-              <MessageTimestamp date={toDate(m.created_at)} />
+              <MessageTimestamp date={toDate(m.created_at)} receivedAt={m.received_at} />
             </span>
           </span>
         </div>
         </MessageContextMenu>
         )
-      ) : look === "compact" ? (
+      )}
+      {rowKind === "compact" && (
         <MessageContextMenu messageActions={messageActions} onOpenChange={handleCtxMenuOpenChange} onReaction={canReact ? (src) => onReaction(src, m) : undefined} serverHost={serverHost}>
           {tiny ? (
             /* Mini mode: time and name start the first line and the text wraps back under them, so it gets the full width. */
@@ -522,7 +562,8 @@ export const MessageRow = memo(forwardRef<HTMLDivElement, MessageRowProps>(({
           </div>
           )}
         </MessageContextMenu>
-      ) : meta.isFirstInGroup ? (
+      )}
+      {rowKind === "first" && (
         <MessageContextMenu messageActions={messageActions} onOpenChange={handleCtxMenuOpenChange} onReaction={canReact ? (src) => onReaction(src, m) : undefined} serverHost={serverHost}>
           <div className="flex gap-3 items-start" style={{ width: "100%", marginTop: look === "bubbles" ? 14 : 12, flexDirection: alignRight ? "row-reverse" : "row" }}>
             {!(look === "bubbles" && alignRight) && avatarNode}
@@ -532,7 +573,8 @@ export const MessageRow = memo(forwardRef<HTMLDivElement, MessageRowProps>(({
             </div>
           </div>
         </MessageContextMenu>
-      ) : (
+      )}
+      {rowKind === "follow-on" && (
         <MessageContextMenu messageActions={messageActions} onOpenChange={handleCtxMenuOpenChange} onReaction={canReact ? (src) => onReaction(src, m) : undefined} serverHost={serverHost}>
           <div className="flex" style={{ width: "100%", marginTop: look === "bubbles" ? 4 : 0, ...(alignRight ? { paddingRight: look === "bubbles" ? 0 : 63 } : { paddingLeft: 63 }) }}>
             <div className="flex flex-col" style={{ flex: 1, minWidth: 0, alignItems: bubbleAlign }}>
@@ -624,6 +666,8 @@ function MessageContent({
   own,
   highlighted,
   onMore,
+  onThread,
+  threadLabel,
 }: {
   /** Floated before the text, for Compact's time and name in mini mode. */
   leading?: React.ReactNode;
@@ -636,6 +680,8 @@ function MessageContent({
   /** Hovered, or its menu or picker open. Bubbles show it on the bubble rather than the row. */
   highlighted: boolean;
   onMore: (anchor: HTMLElement) => void;
+  onThread?: () => void;
+  threadLabel: string;
   bgColor: string;
   showToolbar: boolean;
   /** The reactions this person uses most, for the hover bar. */
@@ -677,7 +723,7 @@ function MessageContent({
   // No empty text box above a picture, or it pushes the picture off its corner.
   const drawsText = drawsMessageText(m) && !!m.text?.trim();
   // For tests and tools: a row the server has not confirmed says why.
-  const sendState = m.failed ? "failed" : m.waiting && m.pending ? "waiting" : m.pending ? "pending" : undefined;
+  const sendState = sendStateOf(m);
   const bubble = look === "bubbles";
   const barRef = useRef<HTMLDivElement>(null);
   const [barStyle, setBarStyle] = useState<CSSProperties>({});
@@ -686,9 +732,9 @@ function MessageContent({
     const width = barRef.current?.offsetWidth || 200;
     setBarStyle(hoverBarPlacement(alignRight, rowRef.current, width));
   }, [showToolbar, alignRight, rowRef]);
-  const bubbleBackground = own
-    ? (highlighted ? "var(--gryt-accent-5)" : "var(--gryt-accent-4)")
-    : (highlighted ? "var(--gryt-neutral-5)" : "var(--gryt-neutral-4)");
+  const ownBubble = highlighted ? "var(--gryt-accent-5)" : "var(--gryt-accent-4)";
+  const otherBubble = highlighted ? "var(--gryt-neutral-5)" : "var(--gryt-neutral-4)";
+  const bubbleBackground = own ? ownBubble : otherBubble;
   return (
     <motion.div
       // Reactions already there on open are just there: growing in pushed the chat off the bottom.
@@ -728,14 +774,7 @@ function MessageContent({
       {unencrypted && <UnencryptedDot side={alignRight ? "left" : "right"} />}
       <AnimatePresence>
         {showToolbar && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9, y: 4 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.9, y: 4 }}
-            transition={{ type: "spring", stiffness: 500, damping: 25 }}
-            ref={barRef}
-            style={{ position: "absolute", zIndex: 10, ...barStyle }}
-          >
+          <HoverBar ref={barRef} style={barStyle}>
             {/* onOpenEmojiPicker follows quickReactions rather than a
                 permission of its own: that list is undefined for somebody who
                 may not react, so the button goes with it. */}
@@ -744,14 +783,16 @@ function MessageContent({
               onQuickReaction={(src) => onReaction(src, m)}
               onOpenEmojiPicker={quickReactions ? () => onOpenReactionPicker() : undefined}
               onReply={() => onReply(m)}
+              onThread={onThread}
+              threadLabel={threadLabel}
               onMore={onMore}
             />
-          </motion.div>
+          </HoverBar>
         )}
       </AnimatePresence>
       {m.reply_to_message_id && (
         <div
-          onClick={() => scrollToMessage(m.reply_to_message_id!)}
+          onClick={() => m.reply_to_message_id && scrollToMessage(m.reply_to_message_id)}
           style={{
             borderLeft: "2px solid var(--gryt-accent-8)",
             paddingLeft: "8px",
@@ -888,11 +929,12 @@ function MessageContent({
         )}
         {m.pending && m.waiting && (
           <span className="text-xs" style={{ color: "var(--gryt-neutral-9)", marginTop: "2px" }}>
-            Waiting for the server
+            {m.waitingNote ?? "Waiting for the server"}
           </span>
         )}
       </motion.div>
-      {messageActions.onOpenThread && (
+      {/* Nothing under the message until someone replies. An empty thread opens from the hover bar or the menu. */}
+      {messageActions.onOpenThread && (messageActions.replyCount ?? 0) > 0 && (
         <button
           onClick={messageActions.onOpenThread}
           style={{
@@ -1056,6 +1098,26 @@ function ReactionBadges({
   );
 }
 
+/** Fading out, it lets the pointer through: hovering where it was mustn't open its message again. */
+const HoverBar = forwardRef<HTMLDivElement, { style: CSSProperties; children: ReactNode }>(({ style, children }, ref) => {
+  const present = useIsPresent();
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.9, y: 4 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.9, y: 4 }}
+      transition={{ type: "spring", stiffness: 500, damping: 25 }}
+      ref={ref}
+      // inert, not pointer-events: the buttons set their own, which would still take the hit.
+      inert={!present}
+      style={{ position: "absolute", zIndex: 10, ...style }}
+    >
+      {children}
+    </motion.div>
+  );
+});
+HoverBar.displayName = "HoverBar";
+
 /** Always just above the highlighted part's far end, in every style, so it sits by the message
     it's for. A short message on the left takes it at its start instead (GRYT-1722). */
 function hoverBarPlacement(
@@ -1093,13 +1155,7 @@ function AddedLine({
   const you = !!addedId && addedId === currentUserId;
   const time = new Date(at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 
-  const history = you
-    ? encrypted
-      ? "You\u2019ll see what\u2019s said from now on. Messages from before you were added stay with the people who were there, since they were encrypted for them."
-      : "This conversation isn\u2019t encrypted, so you can read what was said before you were added."
-    : encrypted
-      ? `${added} only sees messages from here on. What was said before stays encrypted for the people who were here.`
-      : `This conversation isn\u2019t encrypted, so ${added} can read what was said before.`;
+  const history = addedHistoryLine(you, encrypted, added);
 
   return (
     <div ref={rowRef} data-message-id={messageId} role="note" className="flex items-center gap-3 py-3 text-xs" style={{ color: "var(--gryt-neutral-10)" }}>
@@ -1125,19 +1181,23 @@ function AddedLine({
 /** Board 5: a small red dot beside a message that went out in the clear. */
 function UnencryptedDot({ side }: { side: "left" | "right" }) {
   return (
-    <span
-      role="img"
-      aria-label="Not encrypted"
-      title="Sent without encryption. Whoever runs this server can read it in the clear."
-      style={{
-        position: "absolute",
-        top: "calc(50% - 3.5px)",
-        [side]: -11,
-        width: 7,
-        height: 7,
-        borderRadius: "50%",
-        background: "var(--gryt-danger-9)",
-      }}
-    />
+    <Tooltip title="Not encrypted. Whoever runs this server can read this message.">
+      <span
+        role="img"
+        aria-label="Not encrypted"
+        style={{
+          position: "absolute",
+          top: "calc(50% - 10px)",
+          [side]: -17,
+          width: 20,
+          height: 20,
+          display: "grid",
+          placeItems: "center",
+          cursor: "help",
+        }}
+      >
+        <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--gryt-danger-9)" }} />
+      </span>
+    </Tooltip>
   );
 }

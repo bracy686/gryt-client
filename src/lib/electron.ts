@@ -1,4 +1,4 @@
-import { AddonManifest, AddonUpdate } from "@/addons";
+import type { AddonManifest, AddonUpdate } from "@/addons";
 
 import type { HotkeyAction, HotkeyBindings } from "./hotkeys";
 import type { RichActivity } from "./richActivity";
@@ -60,6 +60,8 @@ export interface DesktopSource {
   name: string;
   thumbnail: string;
   appIcon: string;
+  /** One of Gryt's own windows: its sound is never shared. */
+  own?: boolean;
   sourceType: "screen" | "window";
   width?: number;
   height?: number;
@@ -213,16 +215,31 @@ export interface WatchedProgram {
   name: string;
 }
 
+export interface VoiceHelperAPI {
+  available(): Promise<boolean>;
+  /** The room_joined udp offer, and the nine effect values in voice_helper.c's order. True once the engine runs. */
+  start(start: { addrs: string[]; session: number; key: string; effects: number[] }): Promise<boolean>;
+  send(line: string): void;
+  onReport(callback: (line: string) => void): () => void;
+  onExit(callback: () => void): () => void;
+}
+
 export interface ElectronAPI {
   isElectron: true;
+  /** A Discord file, fetched where CORS can't block it. Absent on builds from before it existed. */
+  discordFileFetch?: (url: string) => Promise<{ status: number; type: string; retryAfter: string | null; bytes: Uint8Array | null }>;
   /** False where the compositor draws and places windows itself. */
   drawsWindowChrome: boolean;
+  /** The computer's own name, for the device certificate. Absent on builds from before it existed. */
+  computerName?: string;
   /** The Mac App Store build. Absent on builds from before it existed. */
   macAppStore?: boolean;
   windowsStore?: boolean;
   /** Chromium's zoom, rather than CSS zoom. See setNativeZoom below. */
   setZoomFactor(factor: number): void;
   getAppVersion(): Promise<string>;
+  /** gryt-voice, the native voice engine's process (GRYT-1837). Absent on builds from before it. */
+  voiceHelper?: VoiceHelperAPI;
   onHotkeyDown(callback: (action: HotkeyAction) => void): () => void;
   onHotkeyUp(callback: (action: HotkeyAction) => void): () => void;
   setHotkeys(bindings: HotkeyBindings): Promise<boolean>;
@@ -282,7 +299,6 @@ export interface ElectronAPI {
   getStartupWindowSettings?(): Promise<StartupWindowSettings>;
   setStartupWindowSettings?(settings: StartupWindowSettings): Promise<StartupWindowSettings>;
   getCurrentWindowSize?(): Promise<WindowSize>;
-  setSignedIn(signedIn: boolean): void;
   /**
    * Tell the tray what voice is doing. The main process has no other route: mute
    * and deafen are renderer settings and the SFU connection is a renderer concern.
@@ -300,6 +316,8 @@ export interface ElectronAPI {
   getHardwareAcceleration(): Promise<boolean>;
   setHardwareAcceleration(enabled: boolean): void;
   setBadgeCount(count: number): void;
+  /** Flash the taskbar entry or bounce the dock. Absent on builds before GRYT-2010. */
+  flashFrame?(on: boolean): void;
   /**
    * Raise an OS notification. Absent on builds older than the one that added
    * it, which is why the renderer falls back to the web Notification API.
@@ -332,6 +350,9 @@ export interface ElectronAPI {
   setAudioCaptureApplications(sourceIds: string[]): Promise<AudioCaptureSource[]>;
   listAudioCaptureSources(): Promise<AudioCaptureSource[]>;
   onNativeAudioData(callback: (pcm: ArrayBuffer) => void): () => void;
+  /** Each capture on its own, tagged with the windows it belongs to, instead of the mix (GRYT-1905). */
+  setNativeAudioPerSource(on: boolean): void;
+  onNativeAudioSourceData(callback: (sourceIds: string[], pcm: ArrayBuffer) => void): () => void;
   onNativeAudioStopped(callback: () => void): () => void;
   onNativeAudioDiagnostic(callback: (msg: string) => void): () => void;
   /** A macOS share whose audio is not getting through. Absent on builds before it was added. */
@@ -360,6 +381,9 @@ export interface ElectronAPI {
    */
   secretsAvailable(): Promise<boolean>;
   sealSecret(plain: string): Promise<string>;
+  /** The seed in iCloud Keychain as hex, shared with the iPhone app. Absent on builds from before it. */
+  readSyncedSeed?(): Promise<string | null>;
+  writeSyncedSeed?(hex: string): Promise<boolean>;
   unsealSecret(sealed: string): Promise<string>;
   loadGlobalStore(): Promise<Record<string, unknown>>;
   setGlobalData(key: string, value: unknown): void;

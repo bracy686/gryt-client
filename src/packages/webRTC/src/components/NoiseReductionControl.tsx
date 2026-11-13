@@ -3,21 +3,22 @@ import { useId } from "react";
 
 import { useSettings } from "@/settings";
 
-import { CallControlButton } from "./CallControlButton";
+import { CallControlButton, type CallControlButtonProps } from "./CallControlButton";
 
-interface NoiseReductionControlProps {
+interface NoiseReductionControlProps extends Pick<CallControlButtonProps, "size" | "style" | "idleClassName"> {
   iconSize?: number;
   side?: "top" | "right";
 }
 
 /** Both call bars use the same persisted setting as Settings → Audio. */
-export function NoiseReductionControl({ iconSize = 16, side = "top" }: NoiseReductionControlProps) {
+export function NoiseReductionControl({ iconSize = 16, side = "top", ...buttonProps }: NoiseReductionControlProps) {
   const { rnnoiseEnabled, setRnnoiseEnabled } = useSettings();
   const maskId = `noise-reduction-${useId().replace(/:/g, "")}`;
 
   return (
     <Tooltip title={rnnoiseEnabled ? "Disable noise reduction" : "Enable noise reduction"} side={side}>
       <CallControlButton
+        {...buttonProps}
         state={rnnoiseEnabled ? "idle" : "off"}
         data-call-control="noise-reduction"
         aria-label={rnnoiseEnabled ? "Disable noise reduction" : "Enable noise reduction"}

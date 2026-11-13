@@ -2,11 +2,10 @@
  * states carried by @gryt/ui Button, IconButton and Avatar; no new controls here. */
 import { Avatar, Button, Dialog, IconButton, MessageBubble } from "@gryt/ui";
 
-import { useAccount } from "@/common";
+import { LogoIcon } from "@/common";
 import { useSettings } from "@/settings";
 
-import { PiSignpost, PiX } from "../lib/icons";
-import { useLinkDevice } from "../lib/pairing/useLinkDevice";
+import { PiX } from "../lib/icons";
 
 /**
  * The first thing anybody sees, drawn as a message rather than a dialog, so a
@@ -14,8 +13,6 @@ import { useLinkDevice } from "../lib/pairing/useLinkDevice";
  */
 export function Welcome() {
   const { hasSeenWelcome, settingsLoaded, completeWelcome } = useSettings();
-  const { isSignedIn } = useAccount();
-  const { open: openLinkDevice } = useLinkDevice();
 
   return (
     /* Guarded on `open` rather than passed straight through: `completeWelcome`
@@ -86,31 +83,16 @@ export function Welcome() {
               DOM, so it is also first for a keyboard and a screen reader. */}
           <div className="flex flex-col gap-2 min-[24rem]:flex-row">
             <Button
-              startIcon={<PiSignpost size={18} />}
+              startIcon={<LogoIcon size={18} />}
               onClick={() => completeWelcome({ startTour: true })}
             >
-              Show me around
+              Get a tour
             </Button>
             <Button tone="ghost" onClick={() => completeWelcome()}>
               I&rsquo;ll look myself
             </Button>
           </div>
 
-          {isSignedIn === false && (
-            <p className="m-0 text-xs text-gryt-muted">
-              Already use Gryt on another device?{" "}
-              <button
-                type="button"
-                className="cursor-pointer border-0 bg-transparent p-0 text-xs text-gryt-accent underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-gryt-accent-light"
-                onClick={() => {
-                  completeWelcome();
-                  openLinkDevice();
-                }}
-              >
-                Link with another device
-              </button>
-            </p>
-          )}
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>

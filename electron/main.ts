@@ -1,4 +1,4 @@
-import { execFile, spawn } from "child_process";
+import { execFile, execFileSync, spawn } from "child_process";
 import {
   app,
   autoUpdater as nativeAutoUpdater,
@@ -7,7 +7,9 @@ import {
   dialog,
   ipcMain,
   Menu,
+  type MessageBoxOptions,
   nativeImage,
+  net,
   Notification,
   powerMonitor,
   safeStorage,
@@ -32,7 +34,9 @@ import {
   statSync,
   writeFileSync,
 } from "fs";
-import { createServer, Server } from "http";
+import { createServer, type Server } from "http";
+import { createRequire } from "module";
+import { hostname } from "os";
 import { dirname, extname, join, resolve } from "path";
 import semver from "semver";
 import { fileURLToPath } from "url";
@@ -56,11 +60,13 @@ import {
   isNativeAudioCaptureAvailable,
   listAudioCaptureSources,
   setAudioCaptureApplications,
+  setPerSourceAudio,
   startNativeAudioCapture,
   stopNativeAudioCapture,
   supportsPerApplicationAudio,
 } from "./audioCaptureManager";
 import curatedGames from "./curated-games.json";
+import { fetchDiscordFile } from "./discordFile";
 import { createRpcHost, findHolder, type Holder, ipcDir, ipcPath, type RpcHostState } from "./discordIpc";
 import {
   autoStartIfNeeded,
@@ -166,6 +172,7 @@ import {
   patchUser,
   saveUser,
 } from "./userStore";
+import { registerVoiceHelper, voiceHelperPath } from "./voiceHelper";
 import { cleanupWindowsMigrationBackup } from "./windowsInstallMigration";
 import { createWindowStateManager } from "./windowState";
 
@@ -574,7 +581,6 @@ let voiceState: VoiceState = {
   serverName: null,
 };
 
-let isUserSignedIn = false;
 let uiohookRunning = false;
 let startHiddenOnLaunch = false;
 let localServer: Server | null = null;
@@ -640,9 +646,10 @@ async function warnIfAppImageMoved(): Promise<boolean> {
   if (state.kind === "not-applicable" || state.kind === "present") return true;
 
   const parent = mainWindow ?? undefined;
+  const showBox = (options: MessageBoxOptions) => (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options));
 
   if (state.kind === "trashed") {
-    const { response } = await dialog.showMessageBox(parent!, {
+    const { response } = await showBox({
       type: "warning",
       title: "Gryt is in the Trash",
       message: "Gryt is running from the Trash.",
@@ -667,7 +674,7 @@ async function warnIfAppImageMoved(): Promise<boolean> {
       ensureLinuxAppImageProtocolHandler(restored);
       startupLog(`Recovered AppImage from Trash to ${restored}`);
 
-      await dialog.showMessageBox(parent!, {
+      await showBox({
         type: "info",
         title: "Gryt moved",
         message: `Gryt now lives in ${APPS_DIR}.`,
@@ -681,7 +688,7 @@ async function warnIfAppImageMoved(): Promise<boolean> {
       return true;
     } catch (error) {
       startupLog(`Could not recover AppImage: ${error}`);
-      await dialog.showMessageBox(parent!, {
+      await showBox({
         type: "error",
         title: "Could not move Gryt",
         message: "Gryt could not move itself out of the Trash.",
@@ -697,7 +704,7 @@ async function warnIfAppImageMoved(): Promise<boolean> {
 
   /* Gone, and not in the Trash. There is nothing to put back — say what is
      wrong and what fixes it, rather than offering a button that cannot work. */
-  const { response } = await dialog.showMessageBox(parent!, {
+  const { response } = await showBox({
     type: "warning",
     title: "Gryt has moved",
     message: "Gryt is not where it was when it started.",
@@ -1011,12 +1018,14 @@ const defaultRolloutCheck = autoUpdater.isUserWithinRollout;
 /** Only a `beta` identifier means beta, or `-rc.1` puts somebody on the channel
     silently. The variant lives in the update channel, not in the version. */
 function isOnBetaChannel(): boolean {
+  // The stores only carry stable releases, so a beta setting left from an earlier install would offer one they can't install.
+  if (updatesComeFromAStore) return false;
   const identifiers = semver.prerelease(app.getVersion()) ?? [];
   return readBoolConfig("betaChannel", identifiers.includes("beta"));
 }
 
 /** Read off disk, because the missing `embedded-server.tar.gz` is what differs.
-    check-extra-resources.mjs catches a full build that lost it. */
+    check-extra-resources.ts catches a full build that lost it. */
 function isSlimInstall(): boolean {
   if (!app.isPackaged) return false;
   // The Mac App Store build ships the runtime unpacked instead of the archive.
@@ -1046,6 +1055,8 @@ function variantSwitchPending(): boolean {
 /** electron-updater returns false on `eq(latest, current)` before it looks at
     the channel, so a variant switch is invisible without this. */
 function applyVariantSwitchSpoof(): void {
+  // electron-updater types currentVersion as read-only; the dev build sets it on purpose.
+  // eslint-disable-next-line no-restricted-syntax
   (autoUpdater as unknown as { currentVersion: semver.SemVer }).currentVersion =
     new semver.SemVer(variantSwitchPending() ? "0.0.0" : app.getVersion());
 }
@@ -1065,8 +1076,10 @@ if (!hardwareAcceleration) {
   app.disableHardwareAcceleration();
 }
 
-/* Off on macOS until asked for (GRYT-1659): the Windows installer turns it on, and nothing on a Mac ever did. */
-const canOpenAtLogin = process.platform === "win32" || (process.platform === "darwin" && !process.mas);
+/* Off on macOS until asked for (GRYT-1659): the Windows installer turns it on, and nothing on a Mac ever did.
+   Never in dev: it would register the bare electron.exe, which opens Electron's default window at sign-in. */
+const canOpenAtLogin =
+  app.isPackaged && (process.platform === "win32" || (process.platform === "darwin" && !process.mas));
 let startWithWindows = canOpenAtLogin ? readBoolConfig("startWithWindows", process.platform === "win32") : false;
 
 let startMinimizedOnLogin = readBoolConfig("startMinimizedOnLogin", false);
@@ -2144,6 +2157,36 @@ const TITLEBAR_OVERLAY_HEIGHT = 36;
 // do nothing. XDG_CURRENT_DESKTOP is a colon-separated list by spec. GRYT-1060.
 const NO_WINDOW_CHROME_FLAG = "--gryt-no-window-chrome";
 
+let syncedSeed: { read(): string | null; write(hex: string): boolean } | null | undefined;
+function syncedSeedAddon() {
+  if (syncedSeed !== undefined) return syncedSeed;
+  syncedSeed = null;
+  if (process.platform !== "darwin") return null;
+  const file = app.isPackaged
+    ? join(process.resourcesPath, "native", "gryt_keychain.node")
+    : join(app.getAppPath(), "build", "native", "gryt_keychain.node");
+  try {
+    syncedSeed = createRequire(import.meta.url)(file);
+  } catch (e) {
+    console.warn("[Identity] No iCloud Keychain addon:", e);
+  }
+  return syncedSeed;
+}
+
+/* What the device certificate names this install after (GRYT-1873): "Sivert's MacBook Pro". */
+const COMPUTER_NAME_FLAG = "--gryt-computer-name=";
+function computerName(): string {
+  if (process.platform === "darwin") {
+    try {
+      const name = execFileSync("scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 1000 }).trim();
+      if (name) return name;
+    } catch {
+      // Falls back to the hostname below.
+    }
+  }
+  return hostname().replace(/\.local$/, "");
+}
+
 const TILING_DESKTOPS = new Set([
   "hyprland",
   "sway",
@@ -2200,9 +2243,10 @@ function createMainWindow(): BrowserWindow {
       ),
       // Read off argv in preload rather than fetched over IPC: the titlebar has
       // to know before its first paint, or it renders and then vanishes.
-      additionalArguments: drawsWindowButtons()
-        ? []
-        : [NO_WINDOW_CHROME_FLAG],
+      additionalArguments: [
+        ...(drawsWindowButtons() ? [] : [NO_WINDOW_CHROME_FLAG]),
+        `${COMPUTER_NAME_FLAG}${computerName()}`,
+      ],
       contextIsolation: true,
       nodeIntegration: false,
       // The idle default only; a call turns it off. See setRendererThrottling.
@@ -2267,11 +2311,7 @@ function createMainWindow(): BrowserWindow {
   );
 
   mainWindow.on("close", (event) => {
-    if (
-      !isQuitting &&
-      closeToTray &&
-      isUserSignedIn
-    ) {
+    if (!isQuitting && closeToTray) {
       event.preventDefault();
       mainWindow?.hide();
     }
@@ -3068,10 +3108,20 @@ if (!gotSingleInstanceLock) {
         }
       }
 
+      ipcMain.handle("discord-file-fetch", (_event, url: unknown) => fetchDiscordFile(url, net.fetch.bind(net)));
+
       ipcMain.handle(
         "get-app-version",
         () => app.getVersion()
       );
+
+      registerVoiceHelper(voiceHelperPath({
+        platform: process.platform,
+        arch: process.arch,
+        isPackaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+        devRoot: join(__dirname, ".."),
+      }));
 
       ipcMain.handle(
         "get-slim-variant",
@@ -3388,14 +3438,6 @@ if (!gotSingleInstanceLock) {
       );
 
       ipcMain.on(
-        "set-signed-in",
-        (_event, signedIn: boolean) => {
-          isUserSignedIn =
-            signedIn;
-        }
-      );
-
-      ipcMain.on(
         "set-voice-state",
         (_event, next: VoiceState) => {
           const changed =
@@ -3533,6 +3575,13 @@ if (!gotSingleInstanceLock) {
       );
 
       // ── Secrets at rest ────────────────────────────────────────────
+
+      // The seed in iCloud Keychain, shared with the iPhone app (GRYT-1881). Only a build signed with
+      // the keychain group can reach it; anything else reads null and writes nothing.
+      ipcMain.handle("synced-seed:read", () => syncedSeedAddon()?.read() ?? null);
+      ipcMain.handle("synced-seed:write", (_event, hex: unknown) =>
+        typeof hex === "string" && /^[0-9a-f]{64}$/.test(hex) ? (syncedSeedAddon()?.write(hex) ?? false) : false,
+      );
 
       ipcMain.handle(
         "secret:available",
@@ -3832,6 +3881,10 @@ if (!gotSingleInstanceLock) {
           );
         }
       );
+
+      ipcMain.on("native-audio-per-source", (_event, on: unknown) => {
+        setPerSourceAudio(on === true);
+      });
 
       ipcMain.handle(
         "list-audio-capture-sources",
@@ -4365,11 +4418,16 @@ if (!gotSingleInstanceLock) {
                   width: 320,
                   height: 180,
                 },
+                fetchWindowIcons: true,
               }
             );
 
           const displays =
             screen.getAllDisplays();
+
+          const ownSourceIds = new Set(
+            BrowserWindow.getAllWindows().map((w) => w.getMediaSourceId())
+          );
 
           return sources.map(
             (source) => {
@@ -4386,40 +4444,30 @@ if (!gotSingleInstanceLock) {
                 | number
                 | undefined;
 
-              if (isScreen) {
-                const displayIndex =
-                  parseInt(
-                    source.id.split(
-                      ":"
-                    )[1],
-                    10
-                  );
+              // display_id, not the id's number: on macOS that number is a CGDirectDisplayID, not an index.
+              const display = isScreen
+                ? displays.find((d) => String(d.id) === source.display_id) ?? displays[parseInt(source.id.split(":")[1], 10)]
+                : undefined;
 
-                const display =
-                  displays[
-                    displayIndex
-                  ];
-
-                if (display) {
-                  width =
-                    display.size.width *
-                    display.scaleFactor;
-
-                  height =
-                    display.size.height *
-                    display.scaleFactor;
-                }
+              if (display) {
+                width = Math.round(display.size.width * display.scaleFactor);
+                height = Math.round(display.size.height * display.scaleFactor);
               }
 
               return {
                 id: source.id,
-                name: source.name,
+                name: display
+                  ? `Screen ${displays.indexOf(display) + 1} · ${width}×${height}`
+                  : source.name,
                 thumbnail:
                   source.thumbnail.toDataURL(),
+                // macOS hands back an empty 0×0 image for every window, even with fetchWindowIcons.
                 appIcon:
-                  source.appIcon
+                  source.appIcon && !source.appIcon.isEmpty()
                     ? source.appIcon.toDataURL()
                     : "",
+                // Gryt's own windows, so the picker can keep their sound off.
+                own: ownSourceIds.has(source.id),
                 sourceType:
                   isScreen
                     ? ("screen" as const)
@@ -4644,6 +4692,11 @@ if (!gotSingleInstanceLock) {
         }
       );
 
+      // A ring flashes the taskbar or bounces the dock until it's answered (GRYT-2010).
+      ipcMain.on("flash-frame", (_event, on: boolean) => {
+        mainWindow?.flashFrame(on === true);
+      });
+
       ipcMain.on(
         "toggle-always-on-top",
         (
@@ -4672,9 +4725,14 @@ if (!gotSingleInstanceLock) {
           }
 
           if (win) {
+            // "screen-saver" and every workspace, so a pinned window stays over a fullscreen game too.
             win.setAlwaysOnTop(
               pinned,
-              "floating"
+              "screen-saver"
+            );
+            win.setVisibleOnAllWorkspaces(
+              pinned,
+              { visibleOnFullScreen: true }
             );
           }
         }

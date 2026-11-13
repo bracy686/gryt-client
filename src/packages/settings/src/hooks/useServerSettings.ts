@@ -4,7 +4,7 @@ import { singletonHook } from "@/common";
 import { useUserId } from "@/common";
 
 import { orderServerHosts } from "../serverOrder";
-import { Server, Servers } from "../types/server";
+import type { Server, Servers } from "../types/server";
 import {
   dismissedLanServers as readDismissed,
   forgetLanServerDismissed as forgetDismissed,
@@ -86,12 +86,9 @@ function useServerSettingsHook(): ServerSettings {
     } else {
       setCurrentlyViewingServer((currentServer) => {
         const server = servers[host];
-        if (server) {
-          return server;
-        } else {
-          console.error("Server not found:", host);
-          return currentServer;
-        }
+        if (server) return server;
+        console.error("Server not found:", host);
+        return currentServer;
       });
     }
   }, [servers]);

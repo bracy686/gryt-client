@@ -1,14 +1,15 @@
 import type { StreamSources } from "@gryt/voice";
 import { motion } from "motion/react";
-import { RefObject } from "react";
+import type { RefObject } from "react";
 
 import type { Channel, SidebarItem, SidebarReorderEntry } from "@/settings/src/types/server";
 
 import type { Client } from "../types/clients";
-import { ChannelList } from "./ChannelList";
+import { type CallPeek, ChannelList } from "./ChannelList";
 import type { AdminActions, MemberInfo } from "./MemberSidebar";
 import { ServerHeader } from "./ServerHeader";
 import type { ChannelPlacement } from "./sidebarTree";
+import { UnreadScroller } from "./UnreadScroller";
 
 /** A role id. The server defines its own; these only pass one along. */
 type Role = string;
@@ -18,6 +19,9 @@ const SIDEBAR_SPRING = { type: "spring" as const, stiffness: 380, damping: 34 };
 interface ServerSidebarProps {
   sidebarOpen: boolean;
   sidebarWidthPx: number;
+  /** Narrow windows fold the list to square icons; names show on hover (GRYT-1899). */
+  iconsOnly?: boolean;
+  callPeek?: CallPeek;
   hoverPx: number;
   contentRef: RefObject<HTMLDivElement | null>;
   /** The server dropped: the channels dim and stop taking clicks, the header stays. */
@@ -54,6 +58,7 @@ interface ServerSidebarProps {
   onChannelClick: (channel: Channel) => void;
   clientsSpeaking: Record<string, boolean>;
   streamSources?: StreamSources;
+  videoStreams?: Record<string, MediaStream>;
   canManage: boolean;
   onEditItem: (item: SidebarItem) => void;
   onDeleteItem: (item: SidebarItem) => void;
@@ -72,7 +77,7 @@ interface ServerSidebarProps {
 }
 
 export const ServerSidebar = ({
-  sidebarOpen, sidebarWidthPx, hoverPx, contentRef,
+  sidebarOpen, sidebarWidthPx, iconsOnly = false, callPeek, hoverPx, contentRef,
   isUnreachableWhileConnected, statusLine,
   onMouseEnter, onMouseLeave,
   serverName, serverRole,
@@ -80,13 +85,14 @@ export const ServerSidebar = ({
   channels, sidebarItems, serverHost, clients, members,
   currentChannelId, currentServerConnected, showVoiceView,
   isConnecting, currentConnectionId, selectedChannelId,
-  onChannelClick, clientsSpeaking, streamSources,
+  onChannelClick, clientsSpeaking, streamSources, videoStreams,
   canManage, onEditItem, onDeleteItem, onMoveItem, onReorder, orderResetKey, onAddItem,
   onDisconnectUser, currentUserRole, adminActions, unreadCounts, threadUnreadCounts, mentionCounts,
 }: ServerSidebarProps) => (
   <div
     role="navigation"
     aria-label="Channels"
+    data-channel-icons={iconsOnly || undefined}
     onMouseLeave={onMouseLeave}
     onMouseEnter={onMouseEnter}
     style={{ flexShrink: 0, display: "flex" }}
@@ -117,6 +123,7 @@ export const ServerSidebar = ({
         <div style={{ position: "relative", width: "100%", height: "100%" }}>
           <div className="flex flex-col h-full w-full items-center gap-4">
             <ServerHeader
+              iconsOnly={iconsOnly}
               serverName={serverName}
               statusLine={statusLine}
               role={serverRole}
@@ -149,7 +156,7 @@ export const ServerSidebar = ({
               work. The rows are 12px narrower now, sitting in a 6px gutter,
               and that is the trade.
             */}
-            <div style={{
+            <UnreadScroller iconsOnly={iconsOnly ?? false} style={{
               flex: 1,
               width: "100%",
               minHeight: 0,
@@ -161,6 +168,8 @@ export const ServerSidebar = ({
               transition: "opacity 0.3s ease",
             }}>
               <ChannelList
+                iconsOnly={iconsOnly}
+                callPeek={callPeek}
                 channels={channels}
                 items={sidebarItems}
                 serverHost={serverHost}
@@ -175,6 +184,7 @@ export const ServerSidebar = ({
                 onChannelClick={onChannelClick}
                 clientsSpeaking={clientsSpeaking}
                 streamSources={streamSources}
+                videoStreams={videoStreams}
                 canManage={canManage}
                 onEditItem={onEditItem}
                 onDeleteItem={onDeleteItem}
@@ -189,7 +199,7 @@ export const ServerSidebar = ({
                 threadUnreadCounts={threadUnreadCounts}
                 mentionCounts={mentionCounts}
               />
-            </div>
+            </UnreadScroller>
           </div>
         </div>
       </div>

@@ -28,7 +28,9 @@ interface ChatEditorBarProps {
   onArrowUpEmpty: () => void;
   onTyping?: () => void;
   onStopTyping?: () => void;
+  onChange?: () => void;
   serverHost?: string;
+  confirmMassMention?: (text: string, send: () => void) => void;
 }
 
 export function ChatEditorBar({
@@ -50,7 +52,9 @@ export function ChatEditorBar({
   onArrowUpEmpty,
   onTyping,
   onStopTyping,
+  onChange,
   serverHost,
+  confirmMassMention,
 }: ChatEditorBarProps) {
   return (
     <>
@@ -118,10 +122,12 @@ export function ChatEditorBar({
         onCancel={editingMessage ? onCancelEditing : undefined}
         onTyping={onTyping}
         onStopTyping={onStopTyping}
+        onChange={onChange}
         isEditing={!!editingMessage}
         memberList={memberList}
         channelList={channelList}
         serverHost={serverHost}
+        confirmMassMention={confirmMassMention}
       />
     </>
   );

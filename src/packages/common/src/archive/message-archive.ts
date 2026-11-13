@@ -22,9 +22,18 @@ export interface ArchivedMessage {
   reactions?: { src: string; amount: number; users: string[] }[];
   /** A message the server holds too, kept so search and previews reach it. Never an MLS row. */
   copy?: true;
+  /** Came from the other person's copy of the DM, sent once they'd checked it's you (GRYT-1875). */
+  sharedBy?: string;
+  /** Brought over by the sender from their own Discord data (GRYT-1965). */
+  importedFrom?: "discord";
+  /** When the server got this copy, in ms. `sentAt` on a shared copy is only what its sender says. */
+  receivedAt?: number;
 }
 
-type MessageBody = Pick<ArchivedMessage, "senderId" | "senderDeviceId" | "text" | "attachments" | "editedAt" | "replyTo" | "reactions" | "copy">;
+type MessageBody = Pick<
+  ArchivedMessage,
+  "senderId" | "senderDeviceId" | "text" | "attachments" | "editedAt" | "replyTo" | "reactions" | "copy" | "sharedBy" | "receivedAt" | "importedFrom"
+>;
 
 /** Ids and time stay readable for the indexes; the server already knows all four. */
 interface StoredMessage {
@@ -211,6 +220,9 @@ export class MessageArchive {
     if (m.replyTo !== undefined) body.replyTo = m.replyTo;
     if (m.reactions?.length) body.reactions = m.reactions;
     if (m.copy) body.copy = true;
+    if (m.sharedBy !== undefined) body.sharedBy = m.sharedBy;
+    if (m.receivedAt !== undefined) body.receivedAt = m.receivedAt;
+    if (m.importedFrom !== undefined) body.importedFrom = m.importedFrom;
 
     if (!this.key) {
       row.plain = body;

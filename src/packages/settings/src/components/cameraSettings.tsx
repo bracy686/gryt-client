@@ -27,6 +27,17 @@ const QUALITY_OPTIONS = [
   { value: "4p", label: "4p (7×4)" },
 ];
 
+type Resolution = { w: number; h: number };
+
+function resolutionTip(sent: Resolution | null, actual: Resolution | null | undefined, limitedBy: string | null): string {
+  if (!sent) return "What your camera is producing. Join a voice channel to see what is actually being sent.";
+  if (!actual || (sent.w === actual.w && sent.h === actual.h)) {
+    return `Being sent at ${sent.w}×${sent.h}, which is what your camera is producing.`;
+  }
+  const limit = limitedBy ? `, and the encoder is limited by ${limitedBy}` : "";
+  return `Being sent at ${sent.w}×${sent.h}. Your camera is producing ${actual.w}×${actual.h}${limit}.`;
+}
+
 export function CameraSettings() {
   const {
     cameraID,
@@ -239,13 +250,7 @@ export function CameraSettings() {
               />
               {(sentRes ?? actualRes) && (
                 <Tooltip
-                  title={
-                    sentRes
-                      ? differs
-                        ? `Being sent at ${sentRes.w}×${sentRes.h}. Your camera is producing ${actualRes?.w}×${actualRes?.h}${limitedBy ? `, and the encoder is limited by ${limitedBy}` : ""}.`
-                        : `Being sent at ${sentRes.w}×${sentRes.h}, which is what your camera is producing.`
-                      : "What your camera is producing. Join a voice channel to see what is actually being sent."
-                  }
+                  title={resolutionTip(sentRes, actualRes, limitedBy)}
                 >
                   <Chip tone="neutral"
                     style={{
@@ -294,8 +299,8 @@ export function CameraSettings() {
           options={
             devices.length === 0
               ? [{ label: "No cameras found", value: "__none__", disabled: true }]
-              : devices.map((device) => ({
-                  label: device.label || `Camera ${device.deviceId.slice(0, 8)}`,
+              : devices.map((device, index) => ({
+                  label: device.label || `Camera ${index + 1}`,
                   value: device.deviceId || `device-${device.label}`,
                 }))
           }
@@ -334,8 +339,8 @@ export function CameraSettings() {
       />
 
       <ToggleSetting
-        title="Center my face automatically"
-        description="Cameras get cropped to fit a tile, so a face off to one side gets cut off. This works out where yours is, so everyone else's crop follows you. It runs when your camera comes on, and the button beside the camera control does it any time after that. Detection runs on this machine; only two numbers are sent, never video."
+        title="Keep my face centered"
+        description="Cameras get cropped to fit a tile, so a face off to one side gets cut off. This checks where yours is every few seconds and moves everyone else's crop when you've moved. Detection runs on this machine; only two numbers are sent, never video."
         checked={faceFramingEnabled}
         onCheckedChange={setFaceFramingEnabled}
       />

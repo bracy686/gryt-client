@@ -25,7 +25,7 @@ try {
   await page.getByRole("menuitem", { name: "设置", exact: true }).click();
   await page.locator('[data-tour="settings-sound-video"]').click();
   await page.getByRole("button", { name: "音频", exact: true }).click();
-  await expect(page.getByText("麦克风输入音量（100% 为原音量，200% 为两倍）", { exact: true })).toBeVisible();
+  await expect(page.getByText("麦克风输入音量（100% 为原始音量，200% 为两倍）。设为 100% 且关闭所有处理和噪声门时，麦克风将完全绕过音频处理。", { exact: true })).toBeVisible();
   console.log("✓ 中文构建：欢迎页、设置入口、音频说明与页面语言标记");
   await page.close();
 

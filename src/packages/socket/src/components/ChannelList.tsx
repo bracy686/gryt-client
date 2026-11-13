@@ -1,8 +1,8 @@
 import { Button, ContextMenu, Skeleton, Tooltip } from "@gryt/ui";
 import type { StreamSources } from "@gryt/voice";
-import { useMicrophone } from "@gryt/voice";
+import { useCamera, useMicrophone } from "@gryt/voice";
 import { AnimatePresence, LayoutGroup, motion, Reorder } from "motion/react";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { type CSSProperties, type ReactElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import toast from "react-hot-toast";
 
 import {
@@ -22,9 +22,13 @@ import {
   SuppressEveryoneItem,
 } from "@/common";
 import { channelHref } from "@/lib/mentionTokens";
-import { Channel, SidebarItem, SidebarReorderEntry } from "@/settings/src/types/server";
+import type { Channel, SidebarItem, SidebarReorderEntry } from "@/settings/src/types/server";
 
 import { PiCaretDownFill, PiCaretRightFill, PiChatsTeardropFill, PiChatTeardropTextFill, PiGameControllerFill, PiGaugeFill, PiKeyboardFill, PiLockSimpleFill, PiRobotFill, PiSpeakerHighFill } from "../../../../lib/icons";
+import { closeOpenThread, setThreadExpanded, useRememberedThread, useThreadExpanded } from "../hooks/openThreadMemory";
+import type { CallBubble } from "../hooks/useCallBubbles";
+import { cameraStreamFor } from "../lib/cameraStream";
+import { shareCount } from "../lib/screenItems";
 import type { Client } from "../types/clients";
 import { ConnectedUser } from "./connectedUser";
 import { EmojiText } from "./EmojiText";
@@ -49,7 +53,23 @@ import { UnreadIndicator } from "./UnreadIndicator";
 type Role = string;
 
 /** How far a row inside a folder is inset. Matches the caret's own width. */
+export interface CallPeek {
+  bubbles: Record<string, CallBubble[]>;
+  newCount: number;
+}
+
+function newestPeek(peek: CallPeek | undefined, serverUserId: string): string | undefined {
+  const list = peek?.bubbles[serverUserId];
+  return list?.[list.length - 1]?.text;
+}
+
 const INDENT_PX = 14;
+
+/** The call you're in: the voice row and its people on one accent-tinted card. */
+const CALL_CARD_FILL = "var(--gryt-accent-3)";
+const CALL_CARD_STYLE = { outline: "1px solid var(--gryt-accent-6)", borderRadius: 20 } as const;
+/** A call you're not in: the same card shape, edge only, so it groups the people without reading as yours. */
+const OTHER_CALL_STYLE = { outline: "1px solid var(--gryt-accent-a3)", borderRadius: 20 } as const;
 
 const exitVariants = {
   gone: (instant: boolean) => (instant ? { opacity: 0, transition: { duration: 0 } } : { opacity: 0, y: -8 }),
@@ -88,6 +108,32 @@ function stableKeys(
   return keys;
 }
 
+function folderTone(holdsSelected: boolean, waiting: boolean): string {
+  if (holdsSelected) return "text-gryt-accent";
+  return waiting ? "text-gryt-text" : "text-gryt-muted hover:text-gryt-text active:text-gryt-text";
+}
+
+function ChannelGlyph({ channel, locked }: { channel: Channel | undefined; locked: boolean }) {
+  if (locked) return <PiLockSimpleFill size={16} />;
+  if (channel?.automated) return <PiRobotFill size={16} />;
+  if (channel?.layout === "forum") return <PiChatsTeardropFill size={16} />;
+  return channel?.type === "voice" ? <PiSpeakerHighFill size={16} /> : <PiChatTeardropTextFill size={16} />;
+}
+
+function remoteAnalyser<T>(sources: Record<string, { analyser?: T }> | undefined, streamID: string | undefined): T | undefined {
+  return streamID ? sources?.[streamID]?.analyser : undefined;
+}
+
+function rowLabel(item: SidebarItem, channelById: Map<string, Channel>): string {
+  if (item.kind === "channel") return channelById.get(item.channelId ?? item.id)?.name || "channel";
+  return item.kind === "folder" ? item.label || "Folder" : item.kind;
+}
+
+/** The narrow list's name on hover; a plain row has the name written out already. */
+function MaybeNameTip({ name, children }: { name?: string; children: ReactElement }) {
+  return name ? <Tooltip title={name} side="right">{children}</Tooltip> : children;
+}
+
 export const ChannelList = ({
   channels,
   items,
@@ -96,12 +142,16 @@ export const ChannelList = ({
   members,
   currentChannelId,
   currentServerConnected,
+  showVoiceView,
   isConnecting,
   currentConnectionId,
   selectedChannelId,
   onChannelClick,
   clientsSpeaking,
   streamSources,
+  videoStreams,
+  iconsOnly = false,
+  callPeek,
   canManage,
   onEditItem,
   onDeleteItem,
@@ -130,6 +180,12 @@ export const ChannelList = ({
   onChannelClick: (channel: Channel) => void;
   clientsSpeaking: Record<string, boolean>;
   streamSources?: StreamSources;
+  /** Remote cameras, drawn in the rows of the call you're in while its view is hidden. */
+  videoStreams?: Record<string, MediaStream>;
+  /** Square icons with the name on hover; the CSS in style.css does most of it (GRYT-1899). */
+  iconsOnly?: boolean;
+  /** Set while the call is hidden: its newest messages by person, and how many came in. */
+  callPeek?: CallPeek;
   canManage?: boolean;
   onEditItem?: (item: SidebarItem) => void;
   onDeleteItem?: (item: SidebarItem) => void;
@@ -153,6 +209,7 @@ export const ChannelList = ({
   // The same analyser source the voice tile uses, so the row's ring and the
   // tile's agree. false takes no handle; useMicrophone is a singleton.
   const { microphoneBuffer } = useMicrophone(false);
+  const { cameraStream: localCamera } = useCamera();
 
   const memberByServerUserId = new Map(
     (members || []).map((m) => [m.serverUserId, m])
@@ -179,6 +236,8 @@ export const ChannelList = ({
   );
 
   const prefs = useSyncExternalStore(subscribeToPrefs, getStoredSnapshot, getStoredSnapshot);
+  const openThread = useRememberedThread();
+  const threadExpanded = useThreadExpanded();
   const hideMuted = useSyncExternalStore(
     subscribeToPrefs,
     () => getHideMuted(serverHost),
@@ -278,18 +337,17 @@ export const ChannelList = ({
             actually in, which is the wrong way round. */}
         <button
           type="button"
+          data-activity={unread > 0 || mentions > 0 ? mentions : undefined}
           onClick={() => toggleCollapsed(item.id)}
           aria-expanded={!isCollapsed}
           className={[
             "flex w-full items-center gap-2 rounded-(--gryt-radius-md) px-2 py-1 text-left",
             "text-xs font-semibold tracking-wide transition-colors",
             "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gryt-accent-light",
-            holdsSelected ? "text-gryt-accent"
-              : unread > 0 || mentions > 0 ? "text-gryt-text"
-              : "text-gryt-muted hover:text-gryt-text active:text-gryt-text",
+            folderTone(holdsSelected, unread > 0 || mentions > 0),
           ].join(" ")}
         >
-          <span className="min-w-0 shrink truncate">
+          <span className="gryt-hide-in-icons min-w-0 shrink truncate">
             <EmojiText text={item.label || "Folder"} />
           </span>
           <span
@@ -325,20 +383,45 @@ export const ChannelList = ({
       (channel ? threadUnreadCounts?.get(channel.id) ?? 0 : 0);
     // Shown even for the open channel: a mention is cleared by reading rather
     // than by having it open, so one still counted has not been cleared.
-    const mentions = muted ? 0 : (channel ? mentionCounts?.get(channel.id) ?? 0 : 0);
+    const mentions = muted || !channel ? 0 : mentionCounts?.get(channel.id) ?? 0;
     /* Visible and not enterable has always been expressible; the row never said
        so, and the refusal arrived from the media stack after the press. */
     const locked = channel?.type === "voice" && channel.canJoin === false;
+    const hasVoiceMembers = channel?.type === "voice" && Object.values(clients).some((c) => c.voiceChannelId === channelId);
+    const inThisCall = hasVoiceMembers && channel?.id === currentChannelId && serverHost === currentServerConnected;
+    // Only in the call you're in, and only while its view is hidden: the tiles already show the cameras.
+    const liveCameraFor = (id: string) => {
+      if (!inThisCall || showVoiceView || !clients[id].cameraEnabled) return null;
+      return id === currentConnectionId ? localCamera : cameraStreamFor(clients[id].cameraStreamID, null, videoStreams);
+    };
+
+    let callStyle: CSSProperties | undefined;
+    if (inThisCall) callStyle = CALL_CARD_STYLE;
+    else if (hasVoiceMembers) callStyle = OTHER_CALL_STYLE;
+    const threadHere = openThread && openThread.host === serverHost && openThread.conversationId === channel?.id ? openThread.thread : null;
+    const selected = channel?.id === selectedChannelId && !(threadHere && threadExpanded);
 
     return (
-      <div className="flex flex-col items-start w-full relative">
+      <div className="flex flex-col items-start w-full relative" style={callStyle}>
+        {/* Fills behind the lower half of the round row, so the members box reads as part of it, not a box under it. */}
+        {inThisCall && (
+          <div aria-hidden style={{ position: "absolute", top: "18px", left: 0, right: 0, height: "22px", background: CALL_CARD_FILL }} />
+        )}
         {/* Ghost unless it is the one you are in. Every row was a plain
             <Button>, which is the filled accent one, so the whole list read as
             selected and the channel you were actually in was invisible —
             "you are here" was the one thing the list stopped saying. */}
+        <MaybeNameTip name={iconsOnly ? channel?.name : undefined}>
         <Button size="small"
-          tone={channel?.id === selectedChannelId ? "primary" : "ghost"}
+          data-gryt="channel-row"
+          data-activity={unread > 0 || mentions > 0 ? mentions : undefined}
+          aria-label={iconsOnly ? channel?.name : undefined}
+          tone={selected ? "primary" : "ghost"}
           style={{
+            position: "relative",
+            // The accent pill still marks the chat you're reading, so the card's tint doesn't cover it.
+            background: inThisCall && !selected ? CALL_CARD_FILL : undefined,
+            color: inThisCall && !selected ? "var(--gryt-accent-11)" : undefined,
             width: "100%",
             justifyContent: "start",
             overflow: "hidden",
@@ -348,6 +431,7 @@ export const ChannelList = ({
           }}
           title={locked ? "You cannot join this voice channel." : undefined}
           onClick={() => {
+            if (threadHere && threadExpanded) closeOpenThread();
             if (channel) onChannelClick(channel);
           }}
         >
@@ -355,45 +439,41 @@ export const ChannelList = ({
             {/* The lock replaces the speaker rather than sitting beside it.
                 Two glyphs on a row this narrow read as two things, and there
                 is only one thing to say: this room is not for you. */}
-            {locked
-              ? <PiLockSimpleFill size={16} />
-              : channel?.automated ? <PiRobotFill size={16} />
-              : channel?.layout === "forum" ? <PiChatsTeardropFill size={16} />
-              : channel?.type === "voice" ? <PiSpeakerHighFill size={16} /> : <PiChatTeardropTextFill size={16} />}
+            <ChannelGlyph channel={channel} locked={locked} />
           </div>
           {/* A ghost row's label is muted, so an unread channel looked exactly
               like a read one until you found the badge at the far end. */}
           <span
-            className={`truncate${unread > 0 || mentions > 0 ? " font-semibold text-gryt-text" : ""}`}
+            className={`gryt-hide-in-icons truncate${unread > 0 || mentions > 0 ? " font-semibold text-gryt-text" : ""}`}
             style={{ flex: 1, minWidth: 0, textAlign: "left", display: "block" }}
           >
             <EmojiText text={channel?.name || "(missing channel)"} />
           </span>
-          {hasIndicators && (
-            <div className="flex gap-1 items-center" style={{ marginLeft: "auto", flexShrink: 0 }}>
-              {channel!.eSportsMode && (
+          {hasIndicators && channel && (
+            <div className="gryt-hide-in-icons flex gap-1 items-center" style={{ marginLeft: "auto", flexShrink: 0 }}>
+              {channel.eSportsMode && (
                 <Tooltip title="eSports mode">
                   <div className="flex items-center" style={{ color: "var(--gryt-neutral-9)" }}>
                     <PiGameControllerFill size={14} />
                   </div>
                 </Tooltip>
               )}
-              {channel!.requirePushToTalk && (
+              {channel.requirePushToTalk && (
                 <Tooltip title="Push to Talk required">
                   <div className="flex items-center" style={{ color: "var(--gryt-neutral-9)" }}>
                     <PiKeyboardFill size={14} />
                   </div>
                 </Tooltip>
               )}
-              {channel!.disableRnnoise && (
+              {channel.disableRnnoise && (
                 <Tooltip title="Noise suppression disabled">
                   <span className="text-xs font-bold" style={{ color: "var(--gryt-neutral-9)", fontSize: 9, lineHeight: 1, padding: "1px 3px", border: "1px solid var(--gryt-neutral-7)", borderRadius: "var(--gryt-radius-sm)" }}>
                     RAW
                   </span>
                 </Tooltip>
               )}
-              {channel!.maxBitrate && (
-                <Tooltip title={`Max bitrate: ${Math.round(channel!.maxBitrate! / 1000)} kbps`}>
+              {channel.maxBitrate && (
+                <Tooltip title={`Max bitrate: ${Math.round(channel.maxBitrate / 1000)} kbps`}>
                   <div className="flex items-center" style={{ color: "var(--gryt-neutral-9)" }}>
                     <PiGaugeFill size={14} />
                   </div>
@@ -416,12 +496,36 @@ export const ChannelList = ({
               the name. `marginLeft: auto` rather than a spacer, because the
               per-channel indicators above already claim `auto` when they are
               there and two of them would fight. */}
-          <UnreadIndicator unread={unread} mentions={mentions} />
+          {inThisCall && !!callPeek?.newCount && (
+            <span
+              className="gryt-hide-in-icons ml-auto shrink-0 rounded-full px-2 py-0.5 text-[11px] font-extrabold"
+              style={{ background: "var(--gryt-accent)", color: "var(--color-gryt-on-accent)" }}
+            >
+              {callPeek.newCount} new
+            </span>
+          )}
+          {!(inThisCall && callPeek?.newCount && !iconsOnly) && (
+            <span className="gryt-channel-unread"><UnreadIndicator unread={unread} mentions={mentions} /></span>
+          )}
         </Button>
+        </MaybeNameTip>
+
+        {threadHere && !iconsOnly && (
+          <Button
+            size="small"
+            data-gryt="thread-row"
+            tone={threadExpanded ? "primary" : "ghost"}
+            style={{ width: "100%", justifyContent: "start", overflow: "hidden", paddingLeft: 28 }}
+            onClick={() => setThreadExpanded(true)}
+          >
+            <PiChatsTeardropFill size={14} style={{ flexShrink: 0 }} />
+            <span className="truncate">{threadHere.title ? <EmojiText text={threadHere.title} /> : "Thread"}</span>
+          </Button>
+        )}
 
         {channel?.type === "voice" && (
           <AnimatePresence initial={false}>
-            {Object.values(clients).some((c) => c.voiceChannelId === channelId) && (
+            {hasVoiceMembers && (
               <motion.div
                 initial={{ height: 0, opacity: 0 }}
                 animate={{ height: "auto", opacity: 1 }}
@@ -430,8 +534,8 @@ export const ChannelList = ({
                 style={{ overflow: "hidden", width: "100%" }}
               >
                 <div className="flex w-full pt-2 flex-col" style={{
-                    background: "var(--gryt-neutral-3)",
-                    borderRadius: "0 0 var(--gryt-radius-lg) var(--gryt-radius-lg)",
+                    background: inThisCall ? CALL_CARD_FILL : undefined,
+                    borderRadius: "0 0 18px 18px",
                   }}>
                   {Object.keys(clients)?.map(
                     (id) =>
@@ -452,9 +556,7 @@ export const ChannelList = ({
                           speakingAnalyser={
                             id === currentConnectionId
                               ? microphoneBuffer.finalAnalyser
-                              : clients[id].streamID
-                                ? streamSources?.[clients[id].streamID]?.analyser
-                                : undefined
+                              : remoteAnalyser(streamSources, clients[id].streamID)
                           }
                           isMuted={clients[id].isMuted}
                           isDeafened={clients[id].isDeafened}
@@ -478,18 +580,21 @@ export const ChannelList = ({
                             (id !== currentConnectionId && !clients[id].isConnectedToVoice)
                           }
                           screenShareEnabled={clients[id].screenShareEnabled}
+                          screenShareCount={shareCount(clients[id])}
                           cameraEnabled={clients[id].cameraEnabled}
+                          liveCamera={liveCameraFor(id)}
+                          peek={inThisCall && clients[id].serverUserId ? newestPeek(callPeek, clients[id].serverUserId) : undefined}
                           canDisconnect={!!onDisconnectUser}
-                          onDisconnectFromVoice={onDisconnectUser && clients[id].serverUserId ? () => onDisconnectUser(clients[id].serverUserId!) : undefined}
+                          onDisconnectFromVoice={onDisconnectUser && clients[id].serverUserId ? () => onDisconnectUser(clients[id].serverUserId ?? "") : undefined}
                           role={currentUserRole}
-                          targetRole={clients[id].serverUserId ? memberByServerUserId.get(clients[id].serverUserId!)?.role : undefined}
-                          isServerMuted={clients[id].serverUserId ? memberByServerUserId.get(clients[id].serverUserId!)?.isServerMuted : undefined}
-                          isServerDeafened={clients[id].serverUserId ? memberByServerUserId.get(clients[id].serverUserId!)?.isServerDeafened : undefined}
-                          onKick={adminActions?.onKickUser && clients[id].serverUserId ? () => adminActions.onKickUser!(clients[id].serverUserId!) : undefined}
-                          onBan={adminActions?.onBanUser && clients[id].serverUserId ? () => adminActions.onBanUser!(clients[id].serverUserId!) : undefined}
-                          onServerMute={adminActions?.onServerMuteUser && clients[id].serverUserId ? (muted: boolean) => adminActions.onServerMuteUser!(clients[id].serverUserId!, muted) : undefined}
-                          onServerDeafen={adminActions?.onServerDeafenUser && clients[id].serverUserId ? (deafened: boolean) => adminActions.onServerDeafenUser!(clients[id].serverUserId!, deafened) : undefined}
-                          onToggleRole={adminActions?.onToggleRole && clients[id].serverUserId ? (role: Role, hold: boolean) => adminActions.onToggleRole!(clients[id].serverUserId!, role, hold) : undefined}
+                          targetRole={clients[id].serverUserId ? memberByServerUserId.get(clients[id].serverUserId ?? "")?.role : undefined}
+                          isServerMuted={clients[id].serverUserId ? memberByServerUserId.get(clients[id].serverUserId ?? "")?.isServerMuted : undefined}
+                          isServerDeafened={clients[id].serverUserId ? memberByServerUserId.get(clients[id].serverUserId ?? "")?.isServerDeafened : undefined}
+                          onKick={adminActions?.onKickUser && clients[id].serverUserId ? () => adminActions.onKickUser?.(clients[id].serverUserId ?? "") : undefined}
+                          onBan={adminActions?.onBanUser && clients[id].serverUserId ? () => adminActions.onBanUser?.(clients[id].serverUserId ?? "") : undefined}
+                          onServerMute={adminActions?.onServerMuteUser && clients[id].serverUserId ? (muted: boolean) => adminActions.onServerMuteUser?.(clients[id].serverUserId ?? "", muted) : undefined}
+                          onServerDeafen={adminActions?.onServerDeafenUser && clients[id].serverUserId ? (deafened: boolean) => adminActions.onServerDeafenUser?.(clients[id].serverUserId ?? "", deafened) : undefined}
+                          onToggleRole={adminActions?.onToggleRole && clients[id].serverUserId ? (role: Role, hold: boolean) => adminActions.onToggleRole?.(clients[id].serverUserId ?? "", role, hold) : undefined}
                           key={id}
                         />
                       )
@@ -561,9 +666,7 @@ export const ChannelList = ({
 
     const isFirst = hiding ? !moveAmongDrawn(rows, item.id, "up") : index === 0;
     const isLast = hiding ? !moveAmongDrawn(rows, item.id, "down") : index === effectiveItems.length - 1;
-    const label = item.kind === "channel"
-      ? (channelById.get(item.channelId ?? item.id)?.name || "channel")
-      : item.kind === "folder" ? item.label || "Folder" : item.kind;
+    const label = rowLabel(item, channelById);
 
     return (
       <ContextMenu.Root>

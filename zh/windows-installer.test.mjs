@@ -9,19 +9,20 @@ import { test } from "node:test";
 import { cleanupWindowsMigrationBackup } from "../electron/windowsInstallMigration.ts";
 
 const require = createRequire(import.meta.url);
-const configFile = require.resolve("../electron-builder.config.cjs");
+const configUrl = new URL("../electron-builder.config.ts", import.meta.url);
+let configLoads = 0;
+const loadConfig = async () => (await import(`${configUrl.href}?zh-installer=${++configLoads}`)).default;
 const validate = require("@develar/schema-utils");
 const schema = require("app-builder-lib/scheme.json");
 
-test("Chinese full and slim builds expose a valid wizard without changing upstream builds", () => {
+test("Chinese full and slim builds expose a valid wizard without changing upstream builds", async () => {
   const old = { ...process.env };
   try {
     for (const variant of ["full", "slim"]) {
       for (const zh of ["0", "1"]) {
         process.env.GRYT_VARIANT = variant;
         process.env.GRYT_ZH = zh;
-        delete require.cache[configFile];
-        const config = require(configFile);
+        const config = await loadConfig();
         validate(schema, config, { name: "electron-builder" });
         assert.equal(config.nsis.oneClick, zh !== "1");
         assert.equal(config.nsis.allowToChangeInstallationDirectory, zh === "1");
@@ -38,7 +39,6 @@ test("Chinese full and slim builds expose a valid wizard without changing upstre
       if (old[key] === undefined) delete process.env[key];
       else process.env[key] = old[key];
     }
-    delete require.cache[configFile];
   }
 });
 
@@ -55,8 +55,7 @@ test("afterPack records the resolved options even without electron-builder's CI 
   const previous = process.env.GRYT_ZH;
   try {
     process.env.GRYT_ZH = "1";
-    delete require.cache[configFile];
-    const config = require(configFile);
+    const config = await loadConfig();
     const appOutDir = join(root, "win-unpacked");
     mkdirSync(appOutDir);
     const nsis = { ...config.nsis, oneClick: true };
@@ -69,7 +68,6 @@ test("afterPack records the resolved options even without electron-builder's CI 
   } finally {
     if (previous === undefined) delete process.env.GRYT_ZH;
     else process.env.GRYT_ZH = previous;
-    delete require.cache[configFile];
     assert.equal(resolve(dirname(root)), resolve(tmpdir()));
     assert.ok(root.startsWith(join(tmpdir(), "gryt-package-config-")));
     rmSync(root, { recursive: true, force: true });

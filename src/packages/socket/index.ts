@@ -9,10 +9,22 @@ export * from "./src/hooks/useSockets";
 export * from "./src/hooks/whatsNewRequest";
 
 // MLS
+export { type HandoverRequest, handoverRequests, keyResets, ownHandover } from "./src/mls/keyHandover";
 export * from "./src/mls/linkedDevices";
 export * from "./src/mls/ownDevices";
 export { clearRemovedEverywhere } from "./src/mls/removedHere";
-export { type OwnDevicesAnswer, ownMlsDevices, removeOwnMlsDevice, useMlsSource } from "./src/mls/serverMls";
+export {
+  adoptThisDevicesKey,
+  approveHandover,
+  cancelKeyReset,
+  denyHandover,
+  type OwnDevicesAnswer,
+  ownMlsDevices,
+  removeOwnMlsDevice,
+  requestKeyReset,
+  useHostsAwaitingApproval,
+  useMlsSource,
+} from "./src/mls/serverMls";
 
 // Utils
 export * from "./src/utils/joinServerOnce";

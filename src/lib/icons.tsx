@@ -5,13 +5,18 @@
 
 import type { Icon, IconProps } from "@phosphor-icons/react";
 import {
+  Archive,
   ArrowBendUpLeft,
   ArrowCircleUp,
   ArrowDown,
   ArrowLineLeft,
   ArrowLineRight,
+  ArrowRight,
   ArrowsClockwise,
+  ArrowsInSimple,
   ArrowsLeftRight,
+  ArrowsOut,
+  ArrowsOutSimple,
   ArrowSquareOut,
   ArrowUp,
   At,
@@ -27,17 +32,21 @@ import {
   CaretRight,
   CaretUp,
   ChartBar,
+  ChatCircle,
   ChatsTeardrop,
   ChatTeardropDots,
   ChatTeardropText,
   Check,
   CheckCircle,
+  Checks,
   Circle,
   Clock,
   ClockClockwise,
+  Cloud,
   CloudArrowDown,
   CloudArrowUp,
   Code,
+  CodeBlock,
   Copy,
   CopySimple,
   CornersIn,
@@ -73,6 +82,8 @@ import {
   GlobeSimple,
   HandWaving,
   HardDrives,
+  Hash,
+  Heart,
   House,
   HouseLine,
   Image,
@@ -82,7 +93,10 @@ import {
   Link,
   LinkSimple,
   List,
+  ListBullets,
   ListChecks,
+  ListNumbers,
+  Lock,
   LockOpen,
   LockSimple,
   MagnifyingGlass,
@@ -95,6 +109,7 @@ import {
   Monitor,
   MonitorArrowUp,
   Palette,
+  Pause,
   PencilSimple,
   Phone,
   PhoneCall,
@@ -108,6 +123,7 @@ import {
   PushPin,
   PushPinSlash,
   PuzzlePiece,
+  Quotes,
   Robot,
   ScanSmiley,
   Screencast,
@@ -117,7 +133,6 @@ import {
   SidebarSimple,
   SignIn,
   SignOut,
-  Signpost,
   SlidersHorizontal,
   SmileyWink,
   SpeakerHigh,
@@ -126,10 +141,17 @@ import {
   SpeakerSlash,
   SquaresFour,
   Stop,
+  TextB,
+  TextHOne,
+  TextHThree,
+  TextHTwo,
+  TextItalic,
+  TextStrikethrough,
   TrashSimple,
   UploadSimple,
   User,
   UserPlus,
+  Users,
   UsersThree,
   Warning,
   WarningCircle,
@@ -150,18 +172,24 @@ function weighted(Base: Icon, weight: IconProps["weight"], name: string): Icon {
   return Fixed as Icon;
 }
 
+export const PiArchiveFill: Icon = weighted(Archive, "fill", "PiArchiveFill");
+export const PiLockFill: Icon = weighted(Lock, "fill", "PiLockFill");
 export const PiArrowBendUpLeftFill: Icon = weighted(ArrowBendUpLeft, "fill", "PiArrowBendUpLeftFill");
 export const PiArrowBendUpLeftBold: Icon = weighted(ArrowBendUpLeft, "bold", "PiArrowBendUpLeftBold");
 export const PiArrowDownBold: Icon = weighted(ArrowDown, "bold", "PiArrowDownBold");
 export const PiArrowUpBold: Icon = weighted(ArrowUp, "bold", "PiArrowUpBold");
 export const PiArrowLineLeftFill: Icon = weighted(ArrowLineLeft, "fill", "PiArrowLineLeftFill");
 export const PiArrowLineRightFill: Icon = weighted(ArrowLineRight, "fill", "PiArrowLineRightFill");
+export const PiArrowRightBold: Icon = weighted(ArrowRight, "bold", "PiArrowRightBold");
 export const PiArrowsClockwiseBold: Icon = weighted(ArrowsClockwise, "bold", "PiArrowsClockwiseBold");
 export const PiArrowsClockwiseFill: Icon = weighted(ArrowsClockwise, "fill", "PiArrowsClockwiseFill");
 export const PiArrowsLeftRightFill: Icon = weighted(ArrowsLeftRight, "fill", "PiArrowsLeftRightFill");
+export const PiArrowsInSimpleBold: Icon = weighted(ArrowsInSimple, "bold", "PiArrowsInSimpleBold");
+export const PiArrowsOutBold: Icon = weighted(ArrowsOut, "bold", "PiArrowsOutBold");
+export const PiArrowsOutSimpleBold: Icon = weighted(ArrowsOutSimple, "bold", "PiArrowsOutSimpleBold");
 export const PiArrowSquareOutBold: Icon = weighted(ArrowSquareOut, "bold", "PiArrowSquareOutBold");
 export const PiArrowSquareOutFill: Icon = weighted(ArrowSquareOut, "fill", "PiArrowSquareOutFill");
-export const PiAtFill: Icon = weighted(At, "fill", "PiAtFill");
+export const PiAtBold: Icon = weighted(At, "bold", "PiAtBold");
 export const PiBellFill: Icon = weighted(Bell, "fill", "PiBellFill");
 export const PiBootFill: Icon = weighted(Boot, "fill", "PiBootFill");
 export const PiBroadcastFill: Icon = weighted(Broadcast, "fill", "PiBroadcastFill");
@@ -172,16 +200,19 @@ export const PiCaretLeftBold: Icon = weighted(CaretLeft, "bold", "PiCaretLeftBol
 export const PiCaretRightBold: Icon = weighted(CaretRight, "bold", "PiCaretRightBold");
 export const PiCaretRightFill: Icon = weighted(CaretRight, "fill", "PiCaretRightFill");
 export const PiCaretUpFill: Icon = weighted(CaretUp, "fill", "PiCaretUpFill");
+export const PiChatCircleBold: Icon = weighted(ChatCircle, "bold", "PiChatCircleBold");
 export const PiChatTeardropDotsFill: Icon = weighted(ChatTeardropDots, "fill", "PiChatTeardropDotsFill");
 export const PiChatTeardropTextFill: Icon = weighted(ChatTeardropText, "fill", "PiChatTeardropTextFill");
 export const PiChatsTeardropFill: Icon = weighted(ChatsTeardrop, "fill", "PiChatsTeardropFill");
 export const PiChartBarFill: Icon = weighted(ChartBar, "fill", "PiChartBarFill");
 export const PiCheck: Icon = Check;
+export const PiChecksBold: Icon = weighted(Checks, "bold", "PiChecksBold");
 export const PiCheckBold: Icon = weighted(Check, "bold", "PiCheckBold");
 export const PiCheckCircleFill: Icon = weighted(CheckCircle, "fill", "PiCheckCircleFill");
 export const PiClockClockwiseFill: Icon = weighted(ClockClockwise, "fill", "PiClockClockwiseFill");
 export const PiClockFill: Icon = weighted(Clock, "fill", "PiClockFill");
 export const PiCircleFill: Icon = weighted(Circle, "fill", "PiCircleFill");
+export const PiCloudFill: Icon = weighted(Cloud, "fill", "PiCloudFill");
 export const PiCloudArrowDownFill: Icon = weighted(CloudArrowDown, "fill", "PiCloudArrowDownFill");
 export const PiCloudArrowUpFill: Icon = weighted(CloudArrowUp, "fill", "PiCloudArrowUpFill");
 export const PiCode: Icon = Code;
@@ -200,7 +231,9 @@ export const PiDotsThreeCircleFill: Icon = weighted(DotsThreeCircle, "fill", "Pi
 export const PiDotsThreeVerticalBold: Icon = weighted(DotsThreeVertical, "bold", "PiDotsThreeVerticalBold");
 export const PiDownloadSimpleFill: Icon = weighted(DownloadSimple, "fill", "PiDownloadSimpleFill");
 export const PiEnvelopeFill: Icon = weighted(Envelope, "fill", "PiEnvelopeFill");
+export const PiHashBold: Icon = weighted(Hash, "bold", "PiHashBold");
 export const PiEyeFill: Icon = weighted(Eye, "fill", "PiEyeFill");
+export const PiEyeSlashBold: Icon = weighted(EyeSlash, "bold", "PiEyeSlashBold");
 export const PiEyeSlashFill: Icon = weighted(EyeSlash, "fill", "PiEyeSlashFill");
 export const PiFadersHorizontalFill: Icon = weighted(FadersHorizontal, "fill", "PiFadersHorizontalFill");
 export const PiFileAudioFill: Icon = weighted(FileAudio, "fill", "PiFileAudioFill");
@@ -218,6 +251,7 @@ export const PiGearSixFill: Icon = weighted(GearSix, "fill", "PiGearSixFill");
 export const PiGlobeSimpleFill: Icon = weighted(GlobeSimple, "fill", "PiGlobeSimpleFill");
 export const PiHandWavingFill: Icon = weighted(HandWaving, "fill", "PiHandWavingFill");
 export const PiHardDrivesFill: Icon = weighted(HardDrives, "fill", "PiHardDrivesFill");
+export const PiHeartFill: Icon = weighted(Heart, "fill", "PiHeartFill");
 export const PiHouseFill: Icon = weighted(House, "fill", "PiHouseFill");
 export const PiImageFill: Icon = weighted(Image, "fill", "PiImageFill");
 export const PiInfoBold: Icon = weighted(Info, "bold", "PiInfoBold");
@@ -247,6 +281,7 @@ export const PiPhoneCallFill: Icon = weighted(PhoneCall, "fill", "PiPhoneCallFil
 export const PiPhoneDisconnectFill: Icon = weighted(PhoneDisconnect, "fill", "PiPhoneDisconnectFill");
 export const PiPhoneFill: Icon = weighted(Phone, "fill", "PiPhoneFill");
 export const PiPhoneXFill: Icon = weighted(PhoneX, "fill", "PiPhoneXFill");
+export const PiPauseFill: Icon = weighted(Pause, "fill", "PiPauseFill");
 export const PiPlayFill: Icon = weighted(Play, "fill", "PiPlayFill");
 export const PiPlus: Icon = Plus;
 export const PiPlusBold: Icon = weighted(Plus, "bold", "PiPlusBold");
@@ -263,7 +298,6 @@ export const PiShieldWarningFill: Icon = weighted(ShieldWarning, "fill", "PiShie
 export const PiSignInBold: Icon = weighted(SignIn, "bold", "PiSignInBold");
 export const PiSignInFill: Icon = weighted(SignIn, "fill", "PiSignInFill");
 export const PiSignOutFill: Icon = weighted(SignOut, "fill", "PiSignOutFill");
-export const PiSignpost: Icon = Signpost;
 export const PiSlidersHorizontalFill: Icon = weighted(SlidersHorizontal, "fill", "PiSlidersHorizontalFill");
 export const PiSpeakerHighFill: Icon = weighted(SpeakerHigh, "fill", "PiSpeakerHighFill");
 export const PiSpeakerSimpleHighFill: Icon = weighted(SpeakerSimpleHigh, "fill", "PiSpeakerSimpleHighFill");
@@ -275,6 +309,7 @@ export const PiUploadSimple: Icon = UploadSimple;
 export const PiUploadSimpleFill: Icon = weighted(UploadSimple, "fill", "PiUploadSimpleFill");
 export const PiUserFill: Icon = weighted(User, "fill", "PiUserFill");
 export const PiUserPlusFill: Icon = weighted(UserPlus, "fill", "PiUserPlusFill");
+export const PiUsersBold: Icon = weighted(Users, "bold", "PiUsersBold");
 export const PiUsersThreeFill: Icon = weighted(UsersThree, "fill", "PiUsersThreeFill");
 export const PiWarningCircle: Icon = WarningCircle;
 export const PiWarningCircleFill: Icon = weighted(WarningCircle, "fill", "PiWarningCircleFill");
@@ -319,3 +354,13 @@ export const PiSmileyWinkBold: Icon = weighted(SmileyWink, "bold", "PiSmileyWink
 export const PiSmileyWinkFill: Icon = weighted(SmileyWink, "fill", "PiSmileyWinkFill");
 export const PiTrashSimpleBold: Icon = weighted(TrashSimple, "bold", "PiTrashSimpleBold");
 export const PiTrashSimpleFill: Icon = weighted(TrashSimple, "fill", "PiTrashSimpleFill");
+export const PiCodeBlockBold: Icon = weighted(CodeBlock, "bold", "PiCodeBlockBold");
+export const PiListBulletsBold: Icon = weighted(ListBullets, "bold", "PiListBulletsBold");
+export const PiListNumbersBold: Icon = weighted(ListNumbers, "bold", "PiListNumbersBold");
+export const PiQuotesBold: Icon = weighted(Quotes, "bold", "PiQuotesBold");
+export const PiTextBBold: Icon = weighted(TextB, "bold", "PiTextBBold");
+export const PiTextItalicBold: Icon = weighted(TextItalic, "bold", "PiTextItalicBold");
+export const PiTextStrikethroughBold: Icon = weighted(TextStrikethrough, "bold", "PiTextStrikethroughBold");
+export const PiTextHOneBold: Icon = weighted(TextHOne, "bold", "PiTextHOneBold");
+export const PiTextHTwoBold: Icon = weighted(TextHTwo, "bold", "PiTextHTwoBold");
+export const PiTextHThreeBold: Icon = weighted(TextHThree, "bold", "PiTextHThreeBold");

@@ -6,9 +6,11 @@ import { leaveVoiceButton, VOICE_CHANNEL } from "../../nightly/support/call";
 import { connectedPeers, watchPeerConnections } from "../../nightly/support/webrtc";
 import { channelComposer, joinServer } from "../../support/app";
 import { prepare, uniqueName } from "../../support/fixtures";
+import { type BeepConfig, beepScript } from "./beepScript";
 import type { Group } from "./config";
 import type { Fields } from "./jsonl";
 import { type PageScriptConfig, soakPageScript } from "./pageScript";
+import { recordScript } from "./recordScript";
 import { redact } from "./redact";
 import type { Tracker } from "./tracker";
 
@@ -21,6 +23,7 @@ export const BROWSER_ARGS = [
   "--disable-background-timer-throttling",
   "--disable-renderer-backgrounding",
   "--disable-backgrounding-occluded-windows",
+  "--autoplay-policy=no-user-gesture-required",
 ];
 
 /** Everything the page and Chromium's network stack say about the page, into its log. */
@@ -87,12 +90,29 @@ export interface CallClient {
 }
 
 /** One Chromium of its own, joined to the group's server and its voice channel, camera on if asked. */
-export async function startCallClient(who: string, group: Group, track: Tracker, appUrl: string, camera: boolean): Promise<CallClient> {
+export async function startCallClient(
+  who: string,
+  group: Group,
+  track: Tracker,
+  appUrl: string,
+  camera: boolean,
+  beep: BeepConfig | null = null,
+  first = false,
+): Promise<CallClient> {
   const name = uniqueName(`Soak${group.name[0].toUpperCase()}`);
-  const browser: Browser = await chromium.launch({ args: BROWSER_ARGS });
+  // GRYT_SOAK_MIC_FILE: the first client's microphone plays this file (WAV) on a loop.
+  const micFile = process.env.GRYT_SOAK_MIC_FILE;
+  // GRYT_SOAK_REMOTE_BROWSER=ws://host:port: listeners run on another machine's Playwright server; its loopback is this one's.
+  const remote = process.env.GRYT_SOAK_REMOTE_BROWSER;
+  const browser: Browser = remote && !beep?.send
+    ? await chromium.connect(remote, {
+      exposeNetwork: "<loopback>",
+      headers: { "x-playwright-launch-options": JSON.stringify({ args: BROWSER_ARGS }) },
+    })
+    : await chromium.launch({ args: first && micFile ? [...BROWSER_ARGS, `--use-file-for-fake-audio-capture=${micFile}`] : BROWSER_ARGS });
   browser.on("disconnected", () => track.write("browser.disconnected"));
   try {
-    return await joinCall(who, group, track, appUrl, camera, browser, name);
+    return await joinCall(who, group, track, appUrl, camera, browser, name, beep, first);
   } catch (err) {
     await browser.close().catch(() => undefined);
     throw err;
@@ -107,6 +127,8 @@ async function joinCall(
   camera: boolean,
   browser: Browser,
   name: string,
+  beep: BeepConfig | null,
+  first: boolean,
 ): Promise<CallClient> {
   const context = await browser.newContext({
     baseURL: appUrl,
@@ -114,7 +136,60 @@ async function joinCall(
     permissions: ["microphone", "camera"],
   });
   await instrument(context, track, { rewrite: group.rewrite, statsIntervalMs: STATS_INTERVAL_MS });
+  if (beep) await context.addInitScript(beepScript, beep);
   await prepare(context, (problem) => track.write("harness.problem", { problem }), { nickname: name, allowHosts: [group.host] });
+  // A pure tone is what RNNoise removes, and auto gain would move the onset; voice#53's report had RNNoise off too.
+  if (beep) {
+    await context.addInitScript(() => {
+      const device = localStorage.getItem("gryt.deviceId");
+      for (const key of ["rnnoiseEnabled", "autoGainEnabled", "compressorEnabled"]) localStorage.setItem(`user:${device}:${key}`, "false");
+    });
+  }
+  // Music through the call: no processing, as the Low latency preset, so the recording is the transport and codec.
+  if (process.env.GRYT_SOAK_MIC_FILE) {
+    await context.addInitScript(() => {
+      const device = localStorage.getItem("gryt.deviceId");
+      const off = { rnnoiseEnabled: false, autoGainEnabled: false, compressorEnabled: false, noiseGate: 0, micVolume: 100 };
+      for (const [key, value] of Object.entries(off)) localStorage.setItem(`user:${device}:${key}`, JSON.stringify(value));
+    });
+  }
+  if (!first && process.env.GRYT_SOAK_RECORD === "1") await context.addInitScript(recordScript);
+  if (beep?.send && process.env.GRYT_SOAK_PTT === "1") {
+    await context.addInitScript(() => {
+      const device = localStorage.getItem("gryt.deviceId");
+      localStorage.setItem(`user:${device}:inputMode`, JSON.stringify("push_to_talk"));
+      localStorage.setItem(`user:${device}:pushToTalkKey`, JSON.stringify("KeyV"));
+    });
+  }
+  if (process.env.GRYT_SOAK_OWN_TRANSPORT === "1") {
+    await context.addInitScript(() => localStorage.setItem("gryt.ownAudioTransport", "1"));
+  }
+  // Hiding ours isn't enough when the SFU advertises a LAN address too: drop its private candidates as well.
+  if (group.hideLocal) {
+    await context.addInitScript(() => {
+      const PRIVATE = /\s(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|f[cd][0-9a-f]{2}:)/i;
+      const keep = (line: string) => !(line.startsWith("a=candidate:") && PRIVATE.test(line));
+      const Native = window.RTCPeerConnection;
+      class PublicOnly extends Native {
+        setRemoteDescription(d: RTCSessionDescriptionInit) {
+          return super.setRemoteDescription({ type: d.type, sdp: d.sdp?.split("\r\n").filter(keep).join("\r\n") });
+        }
+        addIceCandidate(c?: RTCIceCandidateInit | null) {
+          if (c?.candidate && !keep(`a=${c.candidate}`)) return Promise.resolve();
+          return super.addIceCandidate(c ?? undefined);
+        }
+      }
+      Object.defineProperty(window, "RTCPeerConnection", { value: PublicOnly, configurable: true, writable: true });
+      // The own voice transport races every offered address, so a private one is pointed at a closed port and loses.
+      const NativeTransport = window.WebTransport;
+      class PublicTransport extends NativeTransport {
+        constructor(url: string | URL, options?: WebTransportOptions) {
+          super(PRIVATE.test(` ${new URL(url).hostname}`) ? "https://127.0.0.1:9/" : url, options);
+        }
+      }
+      Object.defineProperty(window, "WebTransport", { value: PublicTransport, configurable: true, writable: true });
+    });
+  }
   // Wraps the soak script's RTCPeerConnection, so both see every connection whichever runs first.
   await watchPeerConnections(context, group.hideLocal);
 
@@ -187,9 +262,10 @@ async function press(page: Page, name: string): Promise<void> {
 
 async function cameraOn(page: Page): Promise<void> {
   await press(page, "Turn camera on");
-  await expect(page.getByRole("button", { name: "Start Camera" }), "the camera preview never got a stream").toBeEnabled();
-  await press(page, "Start Camera");
-  await expect(page.getByRole("button", { name: "Turn camera off" })).toBeAttached();
+  const start = page.getByRole("dialog", { name: "Turn your camera on" }).getByRole("button", { name: "Turn camera on" });
+  await expect(start, "the camera preview never got a stream").toBeEnabled();
+  await start.evaluate((button: HTMLElement) => button.click());
+  await expect(page.getByRole("button", { name: "Turn camera off" }).first()).toBeAttached();
 }
 
 async function leaveCall(page: Page): Promise<void> {

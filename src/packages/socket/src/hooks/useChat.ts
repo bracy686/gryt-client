@@ -1,14 +1,14 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
-import { Socket } from "socket.io-client";
-import useSound from "use-sound";
+import type { Socket } from "socket.io-client";
 
-import messageSoundMp3 from "@/audio/src/assets/universfield-computer-mouse-click-02-383961.mp3";
 import type { SealDecision } from "@/common";
 import { getOwnServerUserId, getServerAccessToken, getSuppressEveryone, getUploadsFileUrl, markChannelUnread, markThreadUnread, mentionsMember, shouldNotifyForMessage, useAccount, useUnreadBadge } from "@/common";
 import { showDesktopNotification } from "@/lib/desktopNotification";
+import { playNotificationSound } from "@/lib/notificationSound";
+import { MESSAGE_SOUNDS, resolveSound } from "@/lib/soundPresets";
 import { useSettings } from "@/settings";
-import { type ForumTag,serverDetailsList as ServerDetailsList } from "@/settings/src/types/server";
+import type { ForumTag, serverDetailsList as ServerDetailsList } from "@/settings/src/types/server";
 
 import { PiInfoFill } from "../../../../lib/icons";
 import type { ChatMessage } from "../components/chatUtils";
@@ -16,13 +16,15 @@ import { fakeDmsOn, fakeHistory } from "../dev/fakeDms";
 import { heldRoleIds } from "../lib/permissions";
 import { useMlsReportsTaken } from "../mls/serverMls";
 import { dmComposer, isMlsPlaceholder, mergeTimeline, mlsNotice } from "../mls/timeline";
-import { useMlsConversation } from "../mls/useMlsConversation";
+import { type MlsAction, useMlsConversation } from "../mls/useMlsConversation";
+
+const NO_ACTIONS: MlsAction[] = [];
 import { mergeSenders } from "../utils/mergeSender";
 import { isOnScreen, warnUnreadOnScreen } from "../utils/onScreenConversation";
 import { openSealedAttachment } from "../utils/sealedAttachments";
 import { sealedNotificationBody } from "../utils/sealedNotification";
 import {
-  ChatErrorPayload,
+  type ChatErrorPayload,
   type ChatErrorRef,
   handleAttachmentsSettled,
   handleChatErrorEvent,
@@ -63,6 +65,8 @@ interface UseChatReturn {
   /** Set when a send was held back for going out in the clear, and carries who
       is blocking it. */
   plaintextPrompt: SealDecision | null;
+  /** This DM has shown its key works, so old plaintext can move onto it. */
+  reencryptReady: boolean;
   /** Send it unencrypted, and stop asking for this conversation. */
   confirmPlaintextSend: () => void;
   /** Do not send it. The text goes back in the composer. */
@@ -101,6 +105,10 @@ interface UseChatReturn {
   mlsReportsTaken: boolean;
   /** This device's history won't open, and that's what's holding the composer. */
   archiveFailed: boolean;
+  /** Buttons for the line above the composer. */
+  mlsActions: MlsAction[];
+  /** The notice is about the other person's key changing; offer their card. */
+  peerKeyNotice: boolean;
 }
 
 /** What the channel keeps of the present once the rest moves to a window. */
@@ -132,10 +140,11 @@ export function useChat({
   const desktopNotificationsEnabledRef = useRef(desktopNotificationsEnabled);
   useEffect(() => { desktopNotificationsEnabledRef.current = desktopNotificationsEnabled; }, [desktopNotificationsEnabled]);
 
-  const [playMessageSound] = useSound(customMessageSoundFile || messageSoundMp3, {
-    volume: messageSoundVolume / 100,
-    soundEnabled: messageSoundEnabled,
-  });
+  // The same player and volume curve as the settings preview and the ringtone, and it isn't throttled in the background.
+  const playMessageSound = useCallback(
+    () => playNotificationSound(resolveSound(customMessageSoundFile, MESSAGE_SOUNDS), messageSoundVolume),
+    [customMessageSoundFile, messageSoundVolume],
+  );
   const messageSoundRef = useRef(playMessageSound);
   const messageSoundEnabledRef = useRef(messageSoundEnabled);
   useEffect(() => { messageSoundRef.current = playMessageSound; }, [playMessageSound]);
@@ -286,7 +295,8 @@ export function useChat({
     // Not yet: a message opened without our member id would be marked locked for good.
     if (!sealing.canOpen) return;
     const pending = chatMessages.filter(
-      (m) => m.sealed && !m.sealedState && !openingRef.current.has(m.message_id),
+      (m): m is ChatMessage & { sealed: NonNullable<ChatMessage["sealed"]> } =>
+        !!m.sealed && !m.sealedState && !openingRef.current.has(m.message_id),
     );
     if (pending.length === 0) return;
 
@@ -299,7 +309,7 @@ export function useChat({
     void Promise.all(
       pending.map(async (message) => {
         try {
-          const opened = await sealing.open(message.sealed!);
+          const opened = await sealing.open(message.sealed);
           // Null is no wrapped key for us: a message from before we joined the
           // conversation. Permanent, ordinary, and not an error.
           if (!opened) {
@@ -489,6 +499,9 @@ export function useChat({
           warnUnreadOnScreen("useChat chat:new", { serverHost, activeConversationId });
         }
         markChannelUnread(serverHost, msg.conversation_id);
+      } else if (msg.conversation_id === activeConversationId && msg.sender_server_id !== currentUserId) {
+        // Read as it arrives, so the server's marker keeps up with the screen. The server ignores a DM.
+        currentConnection.emit("read:set", { conversationId: msg.conversation_id, messageId: msg.message_id });
       }
       /* The same question `useSocketEvents` asks for a background server, so the
          two cannot disagree about focus, a mention, the channel default or a mute. */
@@ -676,17 +689,8 @@ export function useChat({
     const isVoiceChat = activeConversationId === currentChannelId;
     const canViewVoice = !isVoiceChat || isConnected;
 
-    if (isVoiceChat && !canViewVoice) {
-      if (currentlyViewingServer) {
-        const channels = serverDetailsList[currentlyViewingServer.host]?.channels || [];
-        const textChannels = channels.filter((channel) => channel.type === 'text');
-        if (textChannels.length > 0) {
-          return;
-        } else {
-          return;
-        }
-      }
-    }
+    // A voice channel's text is closed to somebody not in the call.
+    if (isVoiceChat && !canViewVoice && currentlyViewingServer) return;
 
     const scopedKey = cacheKeyFor(activeConversationId);
     if (!shouldFetchHistory(scopedKey, activeConversationId, currentConnection, messageCache, messageCacheMeta)) {
@@ -789,14 +793,21 @@ export function useChat({
      encrypted, which it is, and the composer line says why it can't send. */
   const onMlsPath = !!dmPeer && (mlsMode === "mls" || mlsMode === "refused");
   /* Until somebody checks it, their new devices can't be added, so nothing reads as encrypted. */
-  const { memberKeyStates } = useSockets();
+  const { memberKeyStates, memberLists } = useSockets();
+  const peerKeyResetAt = dmPeer ? memberLists[serverHost]?.find((m) => m.serverUserId === dmPeer)?.keyResetAt ?? null : null;
   const peerKey = dmPeer ? memberKeyStates[serverHost]?.[dmPeer] : undefined;
   const peerKeyChanged = peerKey?.decision.kind === "changed" || peerKey?.personKey.kind === "changed";
+  /* A message from them that opened here proves both ends share a working key.
+     Without one, re-encrypting could delete the only readable copy. */
+  const reencryptReady = mlsMode === "mls" && !mls.problems.undecryptable && !mls.problems.lost && !mls.lostHistory && !peerKeyChanged
+    && mls.rows.some((m) => m.mls && m.sender_server_id === dmPeer && !m.shared_by && !m.imported_from);
   const shownSealing = useMemo<SealDecision>(
     () => (onMlsPath && !peerKeyChanged ? { kind: "seal", recipients: [] } : sealing.decision),
     [onMlsPath, peerKeyChanged, sealing.decision],
   );
 
+  // When the line shown is "<name> has a new key", its buttons are for checking that key, not this device's.
+  const peerKeyNotice = mls.mode?.kind === "mls" && peerKeyChanged && mls.problems.lost !== "device_removed" && !(peerKeyResetAt && peerKeyResetAt > Date.now());
   const composer = dmComposer({ dmPeer, mode: mls.mode, waiting: mls.waiting, archiveFailed: mls.archiveFailed, peerKeyChanged });
   const sendPath = composer.path;
   const sendOnEitherPath = useCallback(
@@ -820,6 +831,7 @@ export function useChat({
 
   return {
     plaintextPrompt,
+    reencryptReady,
     confirmPlaintextSend,
     cancelPlaintextSend,
     chatMessages: shownMessages,
@@ -860,6 +872,7 @@ export function useChat({
           peerName: dmPeerName ?? "The other person",
           signedIn: isSignedIn,
           peerKeyChanged,
+          peerKeyResetAt,
         })
       : null,
     composerHeld: composer.held,
@@ -867,5 +880,7 @@ export function useChat({
     reactMlsMessage: mls.react,
     mlsReportsTaken,
     archiveFailed: composer.archiveProblem,
+    mlsActions: dmPeer && !peerKeyNotice ? mls.actions : NO_ACTIONS,
+    peerKeyNotice,
   };
 }

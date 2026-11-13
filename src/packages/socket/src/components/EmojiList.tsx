@@ -41,7 +41,7 @@ export function EmojiList({
 
   const handleDelete = async (emojiName: string) => {
     if (!effectiveAccessToken) {
-      toast.error("Not authenticated.");
+      toast.error("You're not signed in to this server. Join it first.");
       return;
     }
 
@@ -72,7 +72,7 @@ export function EmojiList({
 
   const handleDeleteAll = async () => {
     if (!effectiveAccessToken) {
-      toast.error("Not authenticated.");
+      toast.error("You're not signed in to this server. Join it first.");
       return;
     }
 
@@ -179,15 +179,17 @@ export function EmojiList({
         )}
       </div>
 
-      {loading ? (
+      {loading && (
         <span className="text-sm">
           Loading...
         </span>
-      ) : emojis.length === 0 ? (
+      )}
+      {!loading && emojis.length === 0 && (
         <span className="text-sm">
           No custom emojis yet.
         </span>
-      ) : (
+      )}
+      {!loading && emojis.length > 0 && (
         <div className="flex flex-col gap-1">
           {emojis.map((e) => (
             <div className="flex items-center gap-3 py-1 px-2 emoji-row" key={e.name} style={{

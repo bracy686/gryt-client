@@ -1,8 +1,21 @@
-import type { PhrasingContent, Root, Text } from "mdast";
+import type { Data, Parent, PhrasingContent, Root, Text } from "mdast";
 import type { Plugin } from "unified";
 import { CONTINUE, visit } from "unist-util-visit";
 
 import { mentionTarget } from "@/lib/mentionTokens";
+
+/** The node this plugin adds, so mdast knows it as phrasing content (GRYT-1792). */
+interface MentionNode extends Parent {
+  type: "mention";
+  children: Text[];
+  data?: Data & { hName: string; hProperties: Record<string, string | undefined> };
+}
+
+declare module "mdast" {
+  interface PhrasingContentMap {
+    mention: MentionNode;
+  }
+}
 
 export type MentionableMember = {
   nickname: string;
@@ -54,14 +67,22 @@ function buildReplacements(
         hName: "span",
         hProperties: { "data-mention-id": id ?? "", className: "chat-mention" },
       },
-      children: [{ type: "text", value: `@${original}` } as Text],
-    } as unknown as PhrasingContent);
+      children: [{ type: "text", value: `@${original}` }],
+    } satisfies MentionNode);
 
     changed = true;
     remaining = remaining.slice(earliest + 1 + matchedLen);
   }
 
   return changed ? parts : null;
+}
+
+function mentionProperties(target: NonNullable<ReturnType<typeof mentionTarget>>) {
+  if (target.kind === "channel") {
+    return { "data-channel-id": target.id, "data-channel-host": target.host ?? "", className: "chat-channel" };
+  }
+  if (target.kind === "role") return { "data-role-id": target.id, "data-mention-id": "", className: "chat-mention" };
+  return { "data-mention-id": target.kind === "user" ? target.id : target.kind, className: "chat-mention" };
 }
 
 export function createRemarkMention(members: MentionableMember[]): Plugin<[], Root> {
@@ -80,17 +101,12 @@ export function createRemarkMention(members: MentionableMember[]): Plugin<[], Ro
       const textChild = node.children[0];
       const label = textChild && "value" in textChild ? (textChild as Text).value : "";
       const at = label.startsWith("@") ? label : `@${label}`;
-      const hProperties =
-        target.kind === "channel"
-          ? { "data-channel-id": target.id, "data-channel-host": target.host ?? "", className: "chat-channel" }
-          : target.kind === "role"
-            ? { "data-role-id": target.id, "data-mention-id": "", className: "chat-mention" }
-            : { "data-mention-id": target.kind === "user" ? target.id : target.kind, className: "chat-mention" };
+      const hProperties = mentionProperties(target);
       const mentionNode = {
         type: "mention",
         data: { hName: "span", hProperties },
-        children: [{ type: "text", value: target.kind === "channel" ? "#channel" : at } as Text],
-      } as unknown as PhrasingContent;
+        children: [{ type: "text", value: target.kind === "channel" ? "#channel" : at }],
+      } satisfies MentionNode;
       (parent.children as PhrasingContent[]).splice(index, 1, mentionNode);
       return [CONTINUE, index] as const;
     });

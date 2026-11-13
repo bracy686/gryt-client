@@ -2,7 +2,7 @@ appId: com.gryt.chat
 # Fails the build if anything in extraResources is missing. electron-builder
 # skips a missing extraResource silently, which shipped v1.4.0-beta.5 with no
 # menu bar icon.
-beforeBuild: ./scripts/prepare-electron-build.mjs
+beforeBuild: ./scripts/prepare-electron-build.ts
 productName: Gryt Chat
 copyright: "Copyright © 2022-2026 Gryt Chat"
 artifactName: "Gryt-Chat-${version}-${os}-${arch}.${ext}"
@@ -100,6 +100,11 @@ extraResources:
     to: helper/
     filter:
       - "**/*"
+  # gryt-voice (GRYT-1837), the same way. Only built on macOS so far, and a missing one is skipped.
+  - from: build/voice/${arch}/
+    to: voice/
+    filter:
+      - "**/*"
   # Kept as one archive so Squirrel.Mac stages one signed resource instead of
   # traversing roughly 14,000 server/worker dependency files. The client
   # extracts it into its private app-data runtime on first launch.
@@ -122,7 +127,7 @@ publish:
   repo: gryt
   releaseType: release
 
-afterSign: scripts/notarize.cjs
+afterSign: scripts/notarize.ts
 
 # Also what puts x-scheme-handler/gryt in the Linux desktop entries. Leave
 # linux.mimeTypes unset: each Linux target adds the scheme to it again (GRYT-976).
@@ -277,7 +282,7 @@ win:
   # On `win`, not on `win.signtoolOptions`. It was nested there when it landed,
   # which is not in the schema, and electron-builder validates its whole config
   # before it looks at a target — so a Windows-only mistake failed the macOS and
-  # Linux builds too. check-builder-config.mjs exists because of that.
+  # Linux builds too. check-builder-config.ts exists because of that.
   signExts:
     - .exe
     - .dll

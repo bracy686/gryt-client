@@ -26,6 +26,8 @@ export interface SoakConfig {
   camera: boolean;
   ping: string[];
   browserProbe: boolean;
+  /** Beep the first call client's microphone this often, and time it at the others (voice#53). */
+  beepMs: number | null;
 }
 
 const env = process.env;
@@ -55,7 +57,10 @@ export function readConfig(): SoakConfig {
   }
   if (env.GRYT_SOAK_LOCAL_SERVER) {
     const localInvite = env.GRYT_SOAK_LOCAL_INVITE || null;
-    groups.push(group("local", env.GRYT_SOAK_LOCAL_SERVER, localInvite, env.GRYT_SOAK_LOCAL_SFU || null, count(env.GRYT_SOAK_LOCAL_CLIENTS, 2)));
+    const local = group("local", env.GRYT_SOAK_LOCAL_SERVER, localInvite, env.GRYT_SOAK_LOCAL_SFU || null, count(env.GRYT_SOAK_LOCAL_CLIENTS, 2));
+    // GRYT_SOAK_PUBLIC_ONLY=1: a server on this LAN, but every call goes the public way (clients.ts drops private candidates).
+    local.hideLocal = env.GRYT_SOAK_PUBLIC_ONLY === "1";
+    groups.push(local);
   }
   if (groups.length === 0) {
     throw new Error("Nothing to soak. Set GRYT_TEST_SERVER_URL, GRYT_SOAK_DIRECT_SERVER or GRYT_SOAK_LOCAL_SERVER; e2e/README.md has the rest.");
@@ -70,5 +75,6 @@ export function readConfig(): SoakConfig {
     camera: env.GRYT_SOAK_CAMERA !== "0",
     ping: (env.GRYT_SOAK_PING ?? "").split(",").map((h) => h.trim()).filter(Boolean),
     browserProbe: env.GRYT_SOAK_BROWSER_PROBE !== "0",
+    beepMs: env.GRYT_SOAK_BEEP_MS ? Number(env.GRYT_SOAK_BEEP_MS) : null,
   };
 }

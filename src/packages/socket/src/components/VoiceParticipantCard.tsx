@@ -1,18 +1,21 @@
 import { Avatar, Button, Skeleton, Tooltip } from "@gryt/ui";
 import type { StreamSources } from "@gryt/voice";
-import { useMicrophone } from "@gryt/voice";
+import { useMicrophone, useSFU } from "@gryt/voice";
 import type { ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getUploadsFileUrl, resolveAvatarSrc } from "@/common";
+import { isSoundOff, useShareWindowsVersion } from "@/webRTC/src/adapters/shareWindows";
 
-import { PiCameraFill,PiEyeFill, PiEyeSlashFill, PiMicrophoneSlashFill, PiMonitorArrowUpFill, PiSpeakerSlashFill } from "../../../../lib/icons";
+import { PiCameraFill, PiMicrophoneSlashFill, PiMonitorArrowUpFill, PiSpeakerSlashFill } from "../../../../lib/icons";
 import { useDrawnVideoSize } from "../hooks/useDrawnVideoSize";
 import { toObjectPosition, useVideoFraming } from "../hooks/useVideoFraming";
 import { cameraStreamFor } from "../lib/cameraStream";
+import { parseScreenItem, shareOf } from "../lib/screenItems";
 import type { Client } from "../types/clients";
 import { stopWatchingShare, useWatchedShares, watchShare } from "../utils/watchedShares";
 import type { AdminActions, MemberInfo } from "./MemberSidebar";
+import { ShareTileBar } from "./ShareTileBar";
 import { SpeakingHalo } from "./SpeakingHalo";
 import {
   SPEAKING_RING,
@@ -20,6 +23,8 @@ import {
   tileGradientFrom,
   tileTint,
 } from "./speakingIndicator";
+import { ON_VIDEO } from "./streamQuality";
+import { StreamQualityPill } from "./StreamQualityPill";
 import { UserContextMenu } from "./UserContextMenu";
 
 /** A role id. The server defines its own; these only pass one along. */
@@ -40,6 +45,9 @@ interface LatencyDisplayStats {
   jitterMs?: number | null;
   codec?: string | null;
   candidateType?: string | null;
+  /** On the own transport (GRYT-1836): the measured round trip to them, and how much of theirs is buffered here. */
+  measuredRttMs?: number;
+  bufferedMs?: number | null;
 }
 
 /** Well past a slow negotiation, where offer, answer, ICE and the first RTP on a
@@ -155,7 +163,7 @@ export function VideoCard({
             objectPosition,
             // Eased rather than jumped: the published value is smoothed, but the
             // first after a reconnect can land far from centre.
-            transition: "object-position 400ms ease-out",
+            transition: "object-position 1s ease-in-out",
             transform: mirrored ? "scaleX(-1)" : undefined,
             pointerEvents: "none",
           }}
@@ -293,6 +301,17 @@ function LatencyBadge({
   stats: LatencyDisplayStats | undefined;
   isSelf: boolean;
 }) {
+  if (stats?.measuredRttMs !== undefined) {
+    const buffered = stats.bufferedMs == null ? "" : ` · ${Math.round(stats.bufferedMs)} ms of theirs buffered here`;
+    return (
+      <Tooltip title={`Round trip through the SFU, measured${buffered}`}>
+        <span className="text-xs" style={{ color: latencyColor(stats.measuredRttMs / 2), fontVariantNumeric: "tabular-nums", cursor: "default" }}>
+          {Math.round(stats.measuredRttMs)}ms
+        </span>
+      </Tooltip>
+    );
+  }
+
   const oneWay = stats?.estimatedOneWayMs;
   if (oneWay == null) return null;
 
@@ -389,31 +408,38 @@ export function VoiceParticipantCard({
   // this only reads what the voice connection already set up.
   const { microphoneBuffer } = useMicrophone(false);
   const watchedShares = useWatchedShares();
+  // Your own share's badge follows the menu's sound switch, which only flips the track.
+  useShareWindowsVersion();
+  // Own-transport voice has no analyser to draw a halo from; the transport reports its level (GRYT-1830).
+  const { getTransportLevels } = useSFU();
+  const transportDb = useCallback(
+    () => (serverUserId ? (getTransportLevels?.()?.users.get(serverUserId) ?? -Infinity) : -Infinity),
+    [getTransportLevels, serverUserId],
+  );
 
   if (isScreenTile) {
-    const screenStream = isSelf
-      ? localScreenStream
-      : client.screenShareVideoStreamID &&
-          videoStreams?.[client.screenShareVideoStreamID]
-        ? videoStreams[client.screenShareVideoStreamID]
-        : null;
+    const share = shareOf(client, parseScreenItem(itemId).index);
+    const remoteScreen = share.videoStreamID ? videoStreams?.[share.videoStreamID] ?? null : null;
+    const screenStream = isSelf ? localScreenStream : remoteScreen;
 
     if (!isSelf) {
       const vsKeys = videoStreams ? Object.keys(videoStreams) : [];
       console.log(
         `[ScreenShare] VoiceParticipantCard screen tile: nick=${client.nickname} streamID=${
-          client.screenShareVideoStreamID
+          share.videoStreamID
         } found=${!!screenStream} videoStreamKeys=[${vsKeys.join(",")}]`,
       );
     }
 
     const hasPendingRemoteScreen =
-      !isSelf && client.screenShareEnabled && !!client.screenShareVideoStreamID;
+      !isSelf && client.screenShareEnabled && !!share.videoStreamID;
 
     if (!screenStream && !hasPendingRemoteScreen) return null;
 
-    const screenTitle = isSelf ? "Your Screen" : `${client.nickname}'s Screen`;
-    const shareId = client.screenShareVideoStreamID;
+    let screenTitle = isSelf ? "Your Screen" : `${client.nickname}'s Screen`;
+    if (share.name) screenTitle = isSelf ? `Your ${share.name}` : `${client.nickname} · ${share.name}`;
+    const sharerTint = tileTint(client.nickname, memberInfo?.avatarColor, { nickname: client.nickname, worn: memberInfo?.avatarWorn });
+    const shareId = share.videoStreamID;
     // Someone else's share waits for a click: nothing draws or plays until you choose to watch.
     const watching = isSelf || (!!shareId && watchedShares.has(shareId));
 
@@ -436,28 +462,28 @@ export function VoiceParticipantCard({
         isServerDeafened={memberInfo?.isServerDeafened}
         onKick={
           adminActions?.onKickUser && serverUserId
-            ? () => adminActions.onKickUser!(serverUserId)
+            ? () => adminActions.onKickUser?.(serverUserId)
             : undefined
         }
         onBan={
           adminActions?.onBanUser && serverUserId
-            ? () => adminActions.onBanUser!(serverUserId)
+            ? () => adminActions.onBanUser?.(serverUserId)
             : undefined
         }
         onServerMute={
           adminActions?.onServerMuteUser && serverUserId
-            ? (muted) => adminActions.onServerMuteUser!(serverUserId, muted)
+            ? (muted) => adminActions.onServerMuteUser?.(serverUserId, muted)
             : undefined
         }
         onServerDeafen={
           adminActions?.onServerDeafenUser && serverUserId
             ? (deafened) =>
-                adminActions.onServerDeafenUser!(serverUserId, deafened)
+                adminActions.onServerDeafenUser?.(serverUserId, deafened)
             : undefined
         }
         onToggleRole={
           adminActions?.onToggleRole && serverUserId
-            ? (role, hold) => adminActions.onToggleRole!(serverUserId, role, hold)
+            ? (role, hold) => adminActions.onToggleRole?.(serverUserId, role, hold)
             : undefined
         }
         onPopoutVideo={
@@ -467,7 +493,7 @@ export function VoiceParticipantCard({
                   itemId,
                   screenStream,
                   screenTitle,
-                  (!isSelf && client.screenShareAudioStreamID) || undefined,
+                  (!isSelf && share.audioStreamID) || undefined,
                 )
             : undefined
         }
@@ -475,19 +501,24 @@ export function VoiceParticipantCard({
         {!watching ? (
           <div
             data-gryt="share-unwatched"
-            className="flex h-full w-full flex-col items-center justify-center gap-3 p-4 text-center"
-            style={{ borderRadius: tileRadius, background: "var(--gryt-neutral-3)", color: "var(--gryt-neutral-11)" }}
+            className="flex h-full w-full flex-col items-center justify-center gap-1.5 p-4 text-center"
+            style={{
+              borderRadius: tileRadius,
+              background: tileGradientFrom(sharerTint),
+              boxShadow: `inset 0 0 0 2px hsl(${sharerTint.hue} ${sharerTint.sat}% ${Math.min(sharerTint.light + 18, 70)}%)`,
+              color: "#fff",
+            }}
           >
             <PiMonitorArrowUpFill size={28} />
-            <span className="text-sm">{client.nickname} is sharing their screen</span>
+            <span className="text-[13px] font-bold">{screenTitle}</span>
             <Button size="small" onClick={() => shareId && watchShare(shareId)}>
-              <PiEyeFill size={14} /> Watch stream
+              Watch
             </Button>
           </div>
         ) : (
-          <div className="group relative h-full w-full">
+          <div className="group relative h-full w-full" data-share-tile>
             <VideoCard
-              key={`${serverUserId ?? itemId}:${client.screenShareVideoStreamID || "local"}:${
+              key={`${serverUserId ?? itemId}:${share.videoStreamID || "local"}:${
                 screenStream?.id || "pending"
               }`}
               stream={screenStream}
@@ -513,28 +544,28 @@ export function VoiceParticipantCard({
                         stream: screenStream,
                         title: screenTitle,
                         audioStreamId:
-                          (!isSelf && client.screenShareAudioStreamID) || undefined,
+                          (!isSelf && share.audioStreamID) || undefined,
                         objectFit: "contain",
                       })
                   : undefined
               }
             />
+            {!isSelf && <StreamQualityPill stream={screenStream} />}
+            {share.audioStreamID && !(isSelf && isSoundOff(share.audioStreamID)) && (
+              <span
+                className="pointer-events-none absolute bottom-2.5 right-2.5 rounded-full px-2 py-0.5 text-xs"
+                style={{ background: ON_VIDEO.glass, color: ON_VIDEO.sound }}
+              >
+                ♪ {isSelf ? "sound on" : "sound"}
+              </span>
+            )}
             {!isSelf && shareId && (
-              <Tooltip title="Stop watching">
-                <button
-                  type="button"
-                  aria-label="Stop watching"
-                  data-gryt="share-stop-watching"
-                  className="absolute bottom-2 right-2 flex items-center rounded-full border-0 p-2 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
-                  style={{ background: "rgba(0,0,0,0.6)", color: "white", cursor: "pointer" }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    stopWatchingShare(shareId);
-                  }}
-                >
-                  <PiEyeSlashFill size={16} />
-                </button>
-              </Tooltip>
+              <ShareTileBar
+                name={screenTitle}
+                audioStreamId={share.audioStreamID || undefined}
+                streamSources={streamSources}
+                onStop={() => stopWatchingShare(shareId)}
+              />
             )}
           </div>
         )}
@@ -604,11 +635,8 @@ export function VoiceParticipantCard({
   });
   const hue = tint.hue;
 
-  const speakingAnalyser = isSelf
-    ? microphoneBuffer.finalAnalyser
-    : client.streamID
-      ? streamSources?.[client.streamID]?.analyser
-      : undefined;
+  const remoteAnalyser = client.streamID ? streamSources?.[client.streamID]?.analyser : undefined;
+  const speakingAnalyser = isSelf ? microphoneBuffer.finalAnalyser : remoteAnalyser;
 
   const showMutedBadge =
     !compact && (client.isMuted || client.isDeafened) && !isUserConnecting;
@@ -647,7 +675,12 @@ export function VoiceParticipantCard({
     >
       <div className="flex items-center justify-center relative">
         {!compact && (
-          <SpeakingHalo analyser={speakingAnalyser} hue={hue} size={avatarPx} />
+          <SpeakingHalo
+            analyser={speakingAnalyser}
+            getDb={isSelf ? undefined : transportDb}
+            hue={hue}
+            size={avatarPx}
+          />
         )}
 
         <Avatar
@@ -669,22 +702,6 @@ export function VoiceParticipantCard({
             ...(compact ? {} : { width: avatarPx, height: avatarPx }),
           }}
         />
-
-        {(client.cameraEnabled || fallbackCameraStreamID) && (
-          <div className="flex absolute" style={{ top: "-4px", right: "-4px", background: "var(--gryt-success-9)",
-              borderRadius: "50%",
-              padding: "2px" }}>
-            <PiCameraFill size={10} color="white" />
-          </div>
-        )}
-
-        {client.screenShareEnabled && (
-          <div className="flex absolute" style={{ top: "-4px", left: "-4px", background: "var(--gryt-secondary-9)",
-              borderRadius: "50%",
-              padding: "2px" }}>
-            <PiMonitorArrowUpFill size={10} color="white" />
-          </div>
-        )}
 
         {isUserConnecting && (
           <div className="flex absolute items-center justify-center" style={{
@@ -708,11 +725,8 @@ export function VoiceParticipantCard({
               borderRadius: "var(--gryt-radius-md)",
               padding: "2px 4px",
               border: "1px solid var(--gryt-neutral-6)" }}>
-            {compact && client.isDeafened ? (
-              <PiSpeakerSlashFill size={12} color="var(--gryt-danger-9)" />
-            ) : compact && client.isMuted ? (
-              <PiMicrophoneSlashFill size={12} color="var(--gryt-danger-9)" />
-            ) : null}
+            {compact && client.isDeafened && <PiSpeakerSlashFill size={12} color="var(--gryt-danger-9)" />}
+            {compact && !client.isDeafened && client.isMuted && <PiMicrophoneSlashFill size={12} color="var(--gryt-danger-9)" />}
 
             {client.isAFK && (
               <span className="text-xs font-bold text-gryt-warning">
@@ -777,10 +791,7 @@ export function VoiceParticipantCard({
           stream={cameraStream}
           nickname={client.nickname}
           mirrored={isSelf ? cameraMirrored : false}
-          objectPosition={toObjectPosition(
-            isSelf ? localFraming : framingByClient[itemId],
-            isSelf ? cameraMirrored : false,
-          )}
+          objectPosition={toObjectPosition(isSelf ? localFraming : framingByClient[itemId])}
           isSpeaking={isSpeaking}
           statusIcons={statusBadges}
           radius={tileRadius}
@@ -828,28 +839,28 @@ export function VoiceParticipantCard({
       isServerDeafened={memberInfo?.isServerDeafened}
       onKick={
         adminActions?.onKickUser && serverUserId
-          ? () => adminActions.onKickUser!(serverUserId)
+          ? () => adminActions.onKickUser?.(serverUserId)
           : undefined
       }
       onBan={
         adminActions?.onBanUser && serverUserId
-          ? () => adminActions.onBanUser!(serverUserId)
+          ? () => adminActions.onBanUser?.(serverUserId)
           : undefined
       }
       onServerMute={
         adminActions?.onServerMuteUser && serverUserId
-          ? (muted) => adminActions.onServerMuteUser!(serverUserId, muted)
+          ? (muted) => adminActions.onServerMuteUser?.(serverUserId, muted)
           : undefined
       }
       onServerDeafen={
         adminActions?.onServerDeafenUser && serverUserId
           ? (deafened) =>
-              adminActions.onServerDeafenUser!(serverUserId, deafened)
+              adminActions.onServerDeafenUser?.(serverUserId, deafened)
           : undefined
       }
       onToggleRole={
         adminActions?.onToggleRole && serverUserId
-          ? (role, hold) => adminActions.onToggleRole!(serverUserId, role, hold)
+          ? (role, hold) => adminActions.onToggleRole?.(serverUserId, role, hold)
           : undefined
       }
       onPopoutVideo={

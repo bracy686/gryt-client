@@ -4,9 +4,20 @@
  */
 
 /** `useServerViewLayout`'s numbers, repeated here so this file needs no React. */
-const SIDEBAR_WIDTH = 240;
+const SIDEBAR_WIDTH = 200;
 const VOICE_SIDEBAR_WIDTH = 600;
+/** `voiceGrip.ts`'s preset 1, the smallest stop the grip sets. */
+const VOICE_PRESET_1 = 352;
 const MIN_CHAT_WIDTH = 200;
+
+/** At or below this the channel list folds to square icons, the Narrow board's step after the member strip. */
+export const CHANNEL_ICONS_MAX_WIDTH = 960;
+export const CHANNEL_ICON_LIST_WIDTH = 56;
+
+/** The channel list's width at this window width: the full list, or the icon column. */
+export function channelListWidth(windowWidth: number): number {
+  return windowWidth <= CHANNEL_ICONS_MAX_WIDTH ? CHANNEL_ICON_LIST_WIDTH : SIDEBAR_WIDTH;
+}
 
 /** The rail, the page padding either side of it, and the gaps between panels. */
 const RAIL_WIDTH = 32;
@@ -68,7 +79,7 @@ export function hasRoomForMemberList({
     PAGE_PADDING +
     RAIL_WIDTH +
     GAP +
-    SIDEBAR_WIDTH + // channels
+    channelListWidth(windowWidth) + // channels
     (voicePanelWidth > 0 ? GAP + voicePanelWidth : 0) +
     (threadPanelWidth > 0 ? GAP : 0) +
     chat +
@@ -77,6 +88,40 @@ export function hasRoomForMemberList({
     SIDEBAR_WIDTH; // members
 
   return windowWidth >= needed;
+}
+
+export const AVATAR_COLUMN_WIDTH = 40;
+/** What the chat keeps beside a call before the member list folds: about 60 characters. */
+const MIN_CHAT_BESIDE_CALL = 440;
+
+export type MemberListMode = "full" | "avatars" | "none";
+
+/** Beside a call the list folds to a slim strip of faces before the chat drops under 440; with no call it's `hasRoomForMemberList`. */
+export function memberListMode({
+  windowWidth,
+  voicePanelWidth,
+  voiceFull = false,
+  threadPanelWidth = 0,
+  channelListShown = true,
+}: {
+  windowWidth: number;
+  /** 0 when the voice view is hidden, full, or the user is not in a call. */
+  voicePanelWidth: number;
+  /** The call takes the whole middle and the chat is hidden. */
+  voiceFull?: boolean;
+  threadPanelWidth?: number;
+  /** False with "Keep channels open" off: the list folds to its hover strip and takes no row. */
+  channelListShown?: boolean;
+}): MemberListMode {
+  if (voiceFull) return windowWidth > COMPACT_MAX_WIDTH ? "avatars" : "none";
+  if (voicePanelWidth <= 0 || threadPanelWidth > 0) {
+    return hasRoomForMemberList({ windowWidth, voicePanelWidth, threadPanelWidth }) ? "full" : "none";
+  }
+  const row = (chat: number, members: number) =>
+    PAGE_PADDING + RAIL_WIDTH + GAP + (channelListShown ? channelListWidth(windowWidth) + GAP : 0) + voicePanelWidth + chat + GAP + members;
+  if (row(MIN_CHAT_BESIDE_CALL, SIDEBAR_WIDTH) <= windowWidth) return "full";
+  if (row(MIN_CHAT_WIDTH, AVATAR_COLUMN_WIDTH) <= windowWidth) return "avatars";
+  return "none";
 }
 
 /**
@@ -95,7 +140,7 @@ export function hasRoomForThreadBeside({
     PAGE_PADDING +
     RAIL_WIDTH +
     GAP +
-    SIDEBAR_WIDTH + // channels
+    channelListWidth(windowWidth) + // channels
     (voicePanelWidth > 0 ? GAP + voicePanelWidth : 0) +
     GAP +
     MIN_CHAT_BESIDE_THREAD +
@@ -120,9 +165,9 @@ export function hasRoomForVoicePanel(windowWidth: number): boolean {
     PAGE_PADDING +
     RAIL_WIDTH +
     GAP +
-    SIDEBAR_WIDTH + // channels
+    channelListWidth(windowWidth) + // channels
     GAP +
-    VOICE_SIDEBAR_WIDTH +
+    VOICE_PRESET_1 + 16 + // the smallest the grip sets, and its gap
     MIN_CHAT_WIDTH +
     GAP +
     MEMBER_STRIP; // the collapsed member panel is still in the row

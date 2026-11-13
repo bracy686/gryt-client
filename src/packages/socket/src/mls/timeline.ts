@@ -1,4 +1,5 @@
 import type { DmSealingMode, MlsDmContent } from "@gryt/core";
+import { reencryptedId } from "@gryt/core";
 import type { SealedAttachmentKey } from "@gryt/crypto";
 
 import type { ArchivedMessage } from "@/common";
@@ -29,6 +30,9 @@ export function archivedRow(m: ArchivedMessage, nameFor: (id: string) => string 
     reply_to_message_id: m.replyTo ?? null,
     reactions: m.reactions?.length ? m.reactions : null,
     mls: true,
+    ...(m.sharedBy && m.sharedBy !== m.senderId ? { shared_by: nameFor(m.sharedBy) ?? "them" } : {}),
+    ...(m.receivedAt ? { received_at: new Date(m.receivedAt).toISOString() } : {}),
+    ...(m.importedFrom ? { imported_from: m.importedFrom } : {}),
   };
 }
 
@@ -97,11 +101,16 @@ export function mergeTimeline({
   const floor = Math.max(floorOf(shown, serverHasMore), floorOf(archived, archiveHasMore));
 
   const ids = new Set<string>();
-  return [...shown, ...archived]
-    .filter((m) => {
-      if (ids.has(m.message_id)) return false;
-      ids.add(m.message_id);
-      return m.pending || m.failed || at(m) >= floor;
+  const kept = [...shown, ...archived].filter((m) => {
+    if (ids.has(m.message_id)) return false;
+    ids.add(m.message_id);
+    return m.pending || m.failed || at(m) >= floor;
+  });
+  // A reply can name a message that has since moved onto MLS under a new id.
+  return kept
+    .map((m) => {
+      const reply = m.reply_to_message_id;
+      return reply && !ids.has(reply) && ids.has(reencryptedId(reply)) ? { ...m, reply_to_message_id: reencryptedId(reply) } : m;
     })
     .sort((a, b) => at(a) - at(b));
 }
@@ -127,7 +136,8 @@ export function dmComposer({
   if (!dmPeer) return { path: "server", held: false, archiveProblem: false };
   const disputed = peerKeyChanged && mode?.kind === "mls";
   const held = waiting || mode?.kind === "refused" || disputed;
-  const path = mode?.kind === "sealed-v1" ? "server" : mode?.kind === "mls" && !disputed ? "mls" : "none";
+  const mlsPath = mode?.kind === "mls" && !disputed ? "mls" : "none";
+  const path = mode?.kind === "sealed-v1" ? "server" : mlsPath;
   return { path, held, archiveProblem: archiveFailed && held };
 }
 
@@ -141,7 +151,8 @@ export function mlsNotice(
     peerName,
     signedIn = false,
     peerKeyChanged = false,
-  }: { lostHistory: boolean; home: "browser" | "app"; peerName: string; signedIn?: boolean; peerKeyChanged?: boolean },
+    peerKeyResetAt = null,
+  }: { lostHistory: boolean; home: "browser" | "app"; peerName: string; signedIn?: boolean; peerKeyChanged?: boolean; peerKeyResetAt?: number | null },
 ): string | null {
   const here = home === "browser" ? "this browser" : "this device";
   const Here = home === "browser" ? "This browser" : "This device";
@@ -152,13 +163,27 @@ export function mlsNotice(
   if (mode?.kind === "refused") {
     if (mode.reason === "peer_left_mls") return `Can't send. ${peerName}'s app stopped using end-to-end encryption here.`;
     if (mode.reason === "server_dropped_mls") return "Can't send. This server stopped supporting end-to-end encryption.";
-    return `Can't send yet. ${Here} isn't set up for end-to-end encryption here.`;
+  }
+  if (peerKeyResetAt && peerKeyResetAt > Date.now()) {
+    const on = new Date(peerKeyResetAt).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+    return `${peerName}'s key is being reset, and a new one takes over on ${on}. If you didn't expect this, check with ${peerName} another way.`;
   }
   if (mode?.kind === "mls" && peerKeyChanged) {
-    return `Can't send. ${peerName}'s key changed. Check it's really them on their card first.`;
+    return `${peerName} has a new key, usually from a new phone or computer. Before you reply, compare the pictures on their card with them somewhere this server can't change: in person, on a call, or in a chat on another server.`;
+  }
+  if (problems.lost === "too_many_devices") {
+    return `${Here} can't use encrypted DMs here because your account has the most devices allowed. Remove an old one in Settings, under Devices.`;
+  }
+  if (problems.lost === "other_identity") {
+    return `${Here} has its own encryption key on this server, not your account's. Link it from one of your devices that has your account's key, or make this device's key your account's.`;
+  }
+  if (problems.lost === "not_added") {
+    return `${Here} is new to your chat with ${peerName}. ${peerName}'s app or another of your devices adds it by itself the next time one of them is open. Until then, what you write here waits and goes out on its own.`;
   }
   if (problems.lost === "removed") return `${Here} was taken out of this conversation, so new messages won't show here.`;
   if (problems.lost) return `${Here} lost track of this conversation's encryption, so new messages won't show here.`;
+  // After the reasons above: each of those says what to do, and this line doesn't.
+  if (mode?.kind === "refused") return `Can't send yet. ${Here} isn't set up for end-to-end encryption here.`;
   if (problems.undecryptable > 0) {
     const n = problems.undecryptable;
     return `${n} ${n === 1 ? "message" : "messages"} couldn't be decrypted on ${here}.`;
@@ -172,8 +197,9 @@ export function mlsNotice(
 export function sendFailure(e: unknown, home: "browser" | "app"): string {
   const code = (e as { code?: string })?.code;
   if (code === "peer_unverified") return "Not sent. Their key couldn't be checked. Look at their card to see why.";
+  if (code === "other_identity") return `Not sent. ${home === "browser" ? "This browser" : "This device"} needs to be linked to your account's key first.`;
   if (code === "waiting_for_welcome") {
-    return `Not sent. ${home === "browser" ? "This browser" : "This device"} hasn't been added to the conversation yet.`;
+    return `Not sent. ${home === "browser" ? "This browser" : "This device"} still isn't in this chat. Send it again once the other person or another of your devices has been online.`;
   }
   return "Not sent.";
 }

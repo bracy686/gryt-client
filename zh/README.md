@@ -31,8 +31,8 @@ git config remote.pushDefault origin
 汉化逻辑、字典和检查都集中在这个目录，上游集成点有：
 
 1. `vite.config.ts` —— 引入本插件：`import { zhCN } from "./zh/plugin.mjs"`，然后在 `plugins` 和四个 electron 子构建里各加一行 `zhCN()`。
-2. `electron/main.ts:1113` —— 更新源从 `Gryt-chat/gryt` 改成本仓库。否则「检查更新」会把官方英文包装回来，中文界面被覆盖。
-3. `electron-builder.config.cjs` —— 中文包保留 Chromium 的 `zh-CN` 语言资源，并通过 `zh/installer.nsh` 启用简体中文 Windows 安装向导和目录选择；共享安装脚本 `build/installer.nsh` 提供安装阶段的扩展点。
+2. `electron/main.ts` —— 更新源从 `Gryt-chat/gryt` 改成本仓库。否则「检查更新」会把官方英文包装回来，中文界面被覆盖。
+3. `electron-builder.config.ts` —— 中文包保留 Chromium 的 `zh-CN` 语言资源，并通过 `zh/installer.nsh` 启用简体中文 Windows 安装向导和目录选择；共享安装脚本 `build/installer.nsh` 提供安装阶段的扩展点。
 4. `ChatMediaPlayer.tsx` —— 解密视频后使用播放器的键盘控制启动播放，不依赖可翻译的英文按钮名。
 5. `electron/windowState.ts` 与“外观 → 显示”的启动窗口设置 —— 默认关闭窗口记忆，自动尺寸以 1200 × 800 逻辑像素为基准，宽高分别不超过屏幕可用区域的 80%；可改为自定义尺寸。尺寸设置下次启动生效，拖动窗口不覆盖自定义值。开启记忆后保存普通窗口大小、位置及最大化状态，首次无记录时自动适配；关闭时清除历史状态。配置存于本机 `userData/gryt-config.json` 的 `startupWindow` 和 `windowState`，通过专用 IPC 访问。恢复和显示器变更时校正位置，隐藏自启动不提前显示窗口，从托盘恢复不重新套用启动尺寸。
 6. `NoiseReductionControl.tsx` 与两处通话控制栏 —— 在扬声器与摄像头之间加入降噪快捷开关，复用音频设置的 `rnnoiseEnabled` 及其持久化和实时语音配置。横向控制栏与侧栏胶囊共享实心声波盾牌图标（声波镂空）、中文提示和按下状态；与麦克风、声音按钮一致，开启使用默认状态，关闭使用带斜线的突出状态，颜色和悬停效果统一由 `CallControlButton` 及主题控制。
@@ -88,6 +88,10 @@ node zh/window-settings-smoke.mjs         # 中文显示页：桌面控件交互
 node --test zh/windows-installer.test.mjs # 安装配置及迁移备份归属检查
 node zh/windows-installer-smoke.mjs       # Windows：编译隔离测试安装包并实测取消、迁移、更新和卸载
 ```
+
+## 本次上游同步
+
+当前基线为 v1.15.11。版本变化、冲突原因和处理方式见 [同步记录](UPSTREAM-1.15.11.md)。上游构建与检查脚本已迁移到 TypeScript，中文版打包使用 `electron-builder.config.ts`；中文 AST 工具及既有隔离测试暂保留 `.mjs`，逐项登记在 `.js-allowlist`。
 
 ## 上游更新后怎么跟进
 

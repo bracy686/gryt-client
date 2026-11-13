@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 
 import {
-  hasRoomForMemberList,
+  CHANNEL_ICONS_MAX_WIDTH,
   hasRoomForSettingsRail,
   hasRoomForThreadBeside,
   hasRoomForVoicePanel,
   isTinyWindow,
+  type MemberListMode,
+  memberListMode,
 } from "../lib/narrowLayout";
 
 /**
@@ -44,9 +46,9 @@ function usePointerFine() {
  * Whether the member list fits, given what the voice and thread panels have
  * taken. Pass the widths they are drawing at, not the ones they would like.
  */
-export function useRoomForMemberList(voicePanelWidth: number, threadPanelWidth = 0): boolean {
+export function useMemberListMode(voicePanelWidth: number, voiceFull: boolean, threadPanelWidth = 0, channelListShown = true): MemberListMode {
   const windowWidth = useWindowWidth();
-  return hasRoomForMemberList({ windowWidth, voicePanelWidth, threadPanelWidth });
+  return memberListMode({ windowWidth, voicePanelWidth, voiceFull, threadPanelWidth, channelListShown });
 }
 
 /**
@@ -64,6 +66,13 @@ export function useRoomForThreadBeside(voicePanelWidth: number): boolean {
  */
 export function useRoomForVoicePanel(): boolean {
   return hasRoomForVoicePanel(useWindowWidth());
+}
+
+/** The channel list as square icons, below the Narrow board's 960. Never in the tiny window, which has its own list. */
+export function useChannelIcons(): boolean {
+  const windowWidth = useWindowWidth();
+  const pointerFine = usePointerFine();
+  return windowWidth <= CHANNEL_ICONS_MAX_WIDTH && !isTinyWindow({ windowWidth, pointerFine });
 }
 
 /** One channel and nothing else. Desktop only; see `usePointerFine`. */

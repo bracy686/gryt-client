@@ -1,19 +1,19 @@
 import { Avatar, Button, IconButton, Menu, Tooltip } from "@gryt/ui";
-import { useCamera, useSFU } from "@gryt/voice";
+import { useSFU } from "@gryt/voice";
 import { motion } from "motion/react";
 import { type ReactNode,useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 
 import { clearMentions, clearSignedOut, getUploadsFileUrl, markChannelRead, NotificationLevelMenu, resolveAvatarSrc, serverIconSrc, useAccount, useMentionTracker, useThreadMentions, useThreadUnread, useUnreadTracker } from "@/common";
 import { NOTIFICATION_CHANNEL_OPEN_EVENT } from "@/lib/desktopNotification";
-import { useIsCompact, useIsMobile } from "@/mobile";
+import { useIsMobile } from "@/mobile";
 import { useSettings } from "@/settings";
 import { useEmbeddedServer } from "@/settings/src/hooks/useEmbeddedServer";
 import { hostedServerAt, manageServerTab } from "@/settings/src/hostedServers";
-import { SidebarItem } from "@/settings/src/types/server";
-import { setInACall } from "@/webRTC";
+import type { SidebarItem } from "@/settings/src/types/server";
+import { setInACall, useAnyCallButtonPress } from "@/webRTC";
 
-import { PiCameraFill,PiCaretLeftBold, PiGearSixFill, PiMagnifyingGlassBold, PiPhoneFill, PiShieldCheckFill, PiSidebarSimpleFill } from "../../../../lib/icons";
+import { PiCaretLeftBold, PiGearSixFill, PiMagnifyingGlassBold, PiPhoneFill, PiShieldCheckFill, PiSidebarSimpleFill } from "../../../../lib/icons";
 import { useFakeChat } from "../dev/fakeChat";
 import { useFakeChatRunning } from "../dev/fakeChatController";
 import { fakeConversations, fakeDmsOn, fakeHostNow } from "../dev/fakeDms";
@@ -33,17 +33,20 @@ import { hideConversation } from "../hooks/hiddenConversations";
 import { useOpenThread } from "../hooks/openThreadMemory";
 import { useAdminActions } from "../hooks/useAdminActions";
 import { useBlocks } from "../hooks/useBlocks";
+import { useCallBubbles } from "../hooks/useCallBubbles";
 import { callClock, useCallClock } from "../hooks/useCallClock";
 import { useCalls } from "../hooks/useCalls";
 import { useChannelSettings, useHandleChannelClick } from "../hooks/useChannelSettings";
 import { useChat } from "../hooks/useChat";
 import { conversationTitle, type DirectConversation,useDirectMessages } from "../hooks/useDirectMessages";
 import { useLatencyReporting } from "../hooks/useLatencyReporting";
-import { useIsTinyWindow, useRoomForMemberList, useRoomForThreadBeside, useRoomForVoicePanel } from "../hooks/useNarrowWindow";
+import { useChannelIcons, useIsTinyWindow, useMemberListMode, useRoomForThreadBeside, useRoomForVoicePanel } from "../hooks/useNarrowWindow";
 import { usePeerLatency } from "../hooks/usePeerLatency";
 import { useServerPermissions } from "../hooks/usePermissions";
 import { usePins } from "../hooks/usePins";
+import { useReencrypt } from "../hooks/useReencrypt";
 import { useReportUser } from "../hooks/useReportUser";
+import { useRinging } from "../hooks/useRinging";
 import { useServerManagement } from "../hooks/useServerManagement";
 import { useServerReports } from "../hooks/useServerReports";
 import { useServerState } from "../hooks/useServerState";
@@ -51,15 +54,25 @@ import { SIDEBAR_HOVER_PX, SIDEBAR_WIDTH_PX, useMediaAutoShow, useSidebarHover, 
 import { useSidebarEditor } from "../hooks/useSidebarEditor";
 import { useSockets } from "../hooks/useSockets";
 import { getUpdateAvailable } from "../hooks/useVersionStatus";
+import { useWaitingBots } from "../hooks/useWaitingBots";
 import { takeVoiceJoin, usePendingVoiceJoin } from "../hooks/voiceJoinRequest";
-import { THREAD_PANEL_WIDTH } from "../lib/narrowLayout";
+import { AVATAR_COLUMN_WIDTH, CHANNEL_ICON_LIST_WIDTH, THREAD_PANEL_WIDTH } from "../lib/narrowLayout";
+import { withSharing } from "../lib/screenItems";
+import { VOICE_PRESET_1, type VoiceStop } from "../lib/voiceGrip";
+import { useMlsSource } from "../mls/serverMls";
+import { type DiscordImportState, useDiscordImport } from "../utils/discordImport";
 import { getCustomEmojis } from "../utils/emojiData";
 import type { SearchFilter } from "../utils/messageSearch";
 import { setOnScreenConversation } from "../utils/onScreenConversation";
+import { type CallWindow, openCallWindow } from "../utils/popoutCall";
+import { CallPopout } from "./CallPopout";
 import { ChannelDescription } from "./ChannelDescription";
 import { ChatView } from "./ChatView";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CreateChannelDialog } from "./CreateChannelDialog";
+import { DiscordImportCard } from "./DiscordImportCard";
+import { DiscordImportDialog } from "./DiscordImportDialog";
+import { DiscordImportReceipt } from "./DiscordImportReceipt";
 import { DmGroupPanel, DmPersonPanel, PANEL_WIDTH as DM_PANEL_WIDTH } from "./DmInfoPanel";
 import { DmSpaceSidebar } from "./DmSpaceSidebar";
 import { FriendButton } from "./FriendButton";
@@ -86,6 +99,7 @@ import { ServerSidebar } from "./ServerSidebar";
 import { SidebarEditDialog } from "./SidebarEditDialog";
 import { type ChannelPlacement, folderOf } from "./sidebarTree";
 import { UnreachableServer } from "./UnreachableServer";
+import { VoiceGrip } from "./VoiceGrip";
 import { VoiceSheetButton } from "./VoiceSheetButton";
 import { VoiceView } from "./VoiceView";
 
@@ -102,14 +116,41 @@ const fakeCallOptionsFromUrl = readFakeCallOptions(window.location.search);
 /** The messages list is wider than the channel list: two lines a row, with previews. */
 const DM_LIST_WIDTH_PX = 320;
 
+function connectionLine(status: string | undefined, unreachable: boolean, name: string) {
+  if (status === "reconnecting") return { long: `Reconnecting to ${name}…`, short: "Reconnecting…" };
+  return unreachable ? { long: `Can’t reach ${name}`, short: "Can’t reach it" } : null;
+}
+
+function gripStop(s: { showVoiceView: boolean; isMaximized: boolean; voiceSize: VoiceStop }): VoiceStop {
+  if (!s.showVoiceView) return "hidden";
+  return s.isMaximized ? "full" : s.voiceSize;
+}
+
+function voiceWidthFor(s: { chatTakenOver: boolean; voiceWidth: string; isMaximized: boolean; shownVoiceWidth: number }): string {
+  if (s.chatTakenOver) return "100%";
+  if (s.voiceWidth === "0px") return "0px";
+  return s.isMaximized ? "100%" : `${s.shownVoiceWidth}px`;
+}
+
+function sidePanelOf(s: { searchOpen: boolean; dmSpace: boolean | undefined; dmSearchOpen: boolean; activeDm: boolean; isTiny: boolean }) {
+  if (s.searchOpen && !s.dmSpace) return "search";
+  if (s.dmSpace && s.dmSearchOpen) return "dm-search";
+  if (s.dmSpace && s.activeDm && !s.isTiny) return "dm-member";
+  return "members";
+}
+
+function callerTitle(conversation: Parameters<typeof conversationTitle>[0] | undefined, fallback: string): string {
+  return conversation ? conversationTitle(conversation) : fallback;
+}
+
 /**
  * `dmSpace` swaps the channel sidebar for every server's conversations and drops
  * the member panel. The rest is the same view, keys and all (GRYT-1134).
  */
 export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
   const isMobile = useIsMobile();
-  const isCompact = useIsCompact();
   const isTiny = useIsTinyWindow();
+  const channelIcons = useChannelIcons();
   const {
     showVoiceView, setShowVoiceView, nickname, setShowSettings, setSettingsTab, openSettings,
     inputMode, setInputMode, rnnoiseEnabled, setRnnoiseEnabled,
@@ -120,7 +161,14 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
     devFakeParticipants, devFakeMuted, devFakeScreenShare,
     devFakeDeafened, devFakeSpeaking, devFakeMembers, devFakeChatSeconds,
   } = useSettings();
-  const { currentlyViewingServer, setShowRemoveServer, setLastSelectedChannelForServer, viewServerBehindDmSpace } = useServerManagement();
+  const { currentlyViewingServer, setShowRemoveServer, setLastSelectedChannelForServer, viewServerBehindDmSpace, addServer, removeServer } = useServerManagement();
+  /* Switches the saved server to the address it gave as public (GRYT-2007). A new address is
+     joined and proved like any server added by hand, so its identity check runs as normal. */
+  const switchToPublicAddress = (server: { host: string; name?: string; publicHost?: string }) => {
+    if (!server.publicHost) return;
+    addServer({ host: server.publicHost, name: server.name || server.publicHost }, true);
+    removeServer(server.host);
+  };
   const directory = useDirectory();
   /* The conversations as the search panel's "channels", which is what it names a hit by
      and what `in:` offers. Only the fields it reads. */
@@ -129,7 +177,7 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
     [directory],
   );
   const { connect, currentServerConnected, currentChannelConnected, isConnected, isConnecting, videoStreams, streamSources } = useSFU();
-  const { serverDetailsList, clients, memberLists, serverProfiles } = useSockets();
+  const { serverDetailsList, clients, memberLists, serverProfiles, sockets } = useSockets();
   const { login } = useAccount();
   /** Servers this app hosts, for Manage server. Empty in a browser. */
   const { servers: hostedServers } = useEmbeddedServer();
@@ -154,9 +202,40 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
   const peerLatency = usePeerLatency(currentConnection, heldHostClients);
 
   const {
-    voiceFocused, setVoiceFocused, isMaximized, toggleMaximized,
-    voiceContainerRef, voiceMaxWidth, shownVoiceWidth,
+    voiceFocused, setVoiceFocused, isMaximized, forcedFull, voiceSize, setVoiceStop, voiceContainerWidth,
+    voiceContainerRef, attachVoiceContainer, voiceMaxWidth, shownVoiceWidth,
   } = useVoiceLayout({ setShowVoiceView });
+  const [voiceResizing, setVoiceResizing] = useState(false);
+  const [callWindow, setCallWindow] = useState<CallWindow | null>(null);
+  const popIn = useCallback(() => {
+    setCallWindow(null);
+    setShowVoiceView(true);
+  }, [setShowVoiceView]);
+  // Closed after the call has left it, and never inside the click: closing a window from its own
+  // input handler kills the main process on Windows (0xc000041d).
+  useEffect(() => () => void (callWindow && setTimeout(callWindow.close)), [callWindow]);
+  // Opening the view any other way (a channel, the rail) brings the call back. On the change only:
+  // popping out sets two stores, and for a render the call is out while the view still reads shown.
+  const viewShownBefore = useRef(showVoiceView);
+  useEffect(() => {
+    const was = viewShownBefore.current;
+    viewShownBefore.current = showVoiceView;
+    if (callWindow && showVoiceView && !was) popIn();
+  }, [callWindow, showVoiceView, popIn]);
+  useEffect(() => {
+    if (!isConnected) setCallWindow(null);
+  }, [isConnected]);
+  // Hidden for its chat because the window was too narrow, the call comes back when it widens.
+  const hiddenForChat = useRef(false);
+  useEffect(() => {
+    if (showVoiceView || !isConnected) hiddenForChat.current = false;
+    else if (!forcedFull && hiddenForChat.current) {
+      hiddenForChat.current = false;
+      setShowVoiceView(true);
+    }
+  }, [showVoiceView, isConnected, forcedFull, setShowVoiceView]);
+  // The rail's camera or share, pressed while off, opens the view at preset 1 for the bar's button to act in.
+  useAnyCallButtonPress(() => setVoiceStop(VOICE_PRESET_1));
 
   const [focusedChatHidden, setFocusedChatHidden] = useState(false);
   const [createChannelOpen, setCreateChannelOpen] = useState(false);
@@ -179,6 +258,14 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
   const visibleChannelId = dmSpace || chatPaneHidden ? null : selectedChannelId;
   const visibleDmId = !dmSpace || chatPaneHidden ? null : selectedDmId;
 
+  // With the call out of sight, its messages peek from the channel list and count as "n new" (GRYT-1911).
+  const callPeek = useCallBubbles(isConnected && currentServerConnected ? sockets[currentServerConnected] : null, currentChannelId);
+  const readingCall = showVoiceView || visibleChannelId === currentChannelId;
+  const [seenCallTotal, setSeenCallTotal] = useState(0);
+  useEffect(() => {
+    if (readingCall || callPeek.total < seenCallTotal) setSeenCallTotal(callPeek.total);
+  }, [readingCall, callPeek.total, seenCallTotal]);
+
   /* What the chat loads, by the same rule. The shared fallback was selectedDmId,
      then the channel, so whichever was set last leaked into the other view. */
   const activeConversationId = dmSpace
@@ -188,8 +275,11 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
   useEffect(() => {
     if (!currentlyViewingServer) return;
     const opened = visibleDmId || visibleChannelId;
-    if (opened) markChannelRead(currentlyViewingServer.host, opened);
-  }, [currentlyViewingServer, visibleChannelId, visibleDmId]);
+    if (!opened) return;
+    markChannelRead(currentlyViewingServer.host, opened);
+    // No message id: the server reads up to its newest. It ignores a DM.
+    sockets[currentlyViewingServer.host]?.emit("read:set", { conversationId: opened });
+  }, [currentlyViewingServer, visibleChannelId, visibleDmId, sockets]);
 
   useEffect(() => {
     setOnScreenConversation(currentlyViewingServer?.host ?? null, visibleDmId || visibleChannelId);
@@ -201,10 +291,14 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
   const [dmSearchOpen, setDmSearchOpen] = useState(false);
   // The conversation info panel on the right of the messages space (GRYT-1745).
   const [dmInfoOpen, setDmInfoOpen] = useState(true);
+  const [compareSignal, setCompareSignal] = useState(0);
+  const compareKeys = useCallback(() => {
+    setDmInfoOpen(true);
+    setCompareSignal((n) => n + 1);
+  }, []);
   const [askHide, hideDialog] = useConfirmHide();
   const [pendingLeave, setPendingLeave] = useState<{ title: string; leave: () => void } | null>(null);
   const askLeave = (title: string, leave: () => void) => setPendingLeave({ title, leave });
-  const { setCameraEnabled } = useCamera();
   const openDmSearch = useCallback(() => {
     setDmSearchOpen(true);
     setSearchFocus((n) => n + 1);
@@ -212,7 +306,7 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
   const [searchFocus, setSearchFocus] = useState(0);
   /* The header's button starts in its channel; Ctrl/Cmd+K starts on the whole server. */
   const [searchStartIn, setSearchStartIn] = useState<SearchFilter | undefined>(undefined);
-  const [pendingJump, setPendingJump] = useState<{ conversationId: string; messageId: string; nonce: number } | null>(null);
+  const [pendingJump, setPendingJump] = useState<{ conversationId: string; messageId: string; nonce: number; reply?: boolean } | null>(null);
   // Ctrl/Cmd+K, GRYT-1738. In the messages space it searches this device's copy (GRYT-1748).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -272,21 +366,26 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
      list yields to it the way it already yields to the voice panel. */
   const threadOpen = useOpenThread();
   const threadBeside = useRoomForThreadBeside(drawnVoicePanelWidth);
-  const roomForMembers = useRoomForMemberList(
+  const fittedMembersMode = useMemberListMode(
     drawnVoicePanelWidth,
+    showVoiceView && voiceWidth !== "0px" && isMaximized && !chatTakenOver,
     threadBeside && threadOpen ? THREAD_PANEL_WIDTH : 0,
+    pinChannelsSidebar,
   );
+  // A thread is what you came to read, so the member list steps aside even when it would fit.
+  const membersMode = threadOpen ? "none" : fittedMembersMode;
+  const roomForMembers = membersMode !== "none";
   const roomForVoice = useRoomForVoicePanel();
 
   const {
     leftSidebarOpen, rightSidebarOpen,
     leftSidebarContentRef, rightSidebarContentRef,
     openLeftSidebar, closeLeftSidebar, hideLeftSidebarNow, openRightSidebar, closeRightSidebar,
-  } = useSidebarHover({ pinChannelsSidebar, pinMembersSidebar, isDraggingResize: false, isCompact, roomForMembers });
+  } = useSidebarHover({ pinChannelsSidebar, pinMembersSidebar, isDraggingResize: voiceResizing, roomForMembers });
 
   const serverClients = currentlyViewingServer ? heldHostClients : undefined;
   const { mediaAutoShownRef } = useMediaAutoShow({
-    showVoiceView, setShowVoiceView, isCompact, roomForVoice, isConnected,
+    showVoiceView, setShowVoiceView, roomForVoice, isConnected,
     currentChannelId, serverClients,
   });
 
@@ -388,8 +487,8 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
     isRateLimited, rateLimitCountdown, isVoiceChannelTextChat,
     canViewVoiceChannelText, activeChannelName, activeChannelType, activeChannelAutomated, activeChannelLayout, activeChannelForumTags, activeChannelDescription,
     restoreText, clearRestoreText, fetchOlderMessages, isLoadingOlder, hasOlderMessages, historyWindow,
-    plaintextPrompt, confirmPlaintextSend, cancelPlaintextSend,
-    mlsNotice, composerHeld, deleteMlsMessage, reactMlsMessage, mlsReportsTaken, archiveFailed,
+    plaintextPrompt, confirmPlaintextSend, cancelPlaintextSend, reencryptReady,
+    mlsNotice, composerHeld, deleteMlsMessage, reactMlsMessage, mlsReportsTaken, archiveFailed, mlsActions, peerKeyNotice,
   } = useChat({
     currentConnection, activeConversationId, currentlyViewingServer,
     currentChannelId, isConnected, serverDetailsList, nickname,
@@ -406,8 +505,11 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
       react: reactMlsMessage,
       reportsTaken: mlsReportsTaken,
       archiveFailed,
+      actions: peerKeyNotice
+        ? [{ label: `Check ${activeConversation?.other.nickname ?? "their"}'s key`, run: compareKeys }]
+        : mlsActions,
     }),
-    [mlsNotice, composerHeld, deleteMlsMessage, reactMlsMessage, mlsReportsTaken, archiveFailed],
+    [mlsNotice, composerHeld, deleteMlsMessage, reactMlsMessage, mlsReportsTaken, archiveFailed, mlsActions, peerKeyNotice, activeConversation?.other.nickname, compareKeys],
   );
 
   /** The server already withholds new messages, so this covers what was drawn
@@ -455,12 +557,15 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
 
   const viewerPermissions = useServerPermissions(currentlyViewingServer?.host || "");
 
-  const { pendingReportCount, memberListMap } = useServerReports({
+  const { pendingReportCount: waitingReports, memberListMap } = useServerReports({
     currentConnection, accessToken, currentlyViewingServer, memberLists,
     /* `has`, not `can`: this drives an automatic `reports:list` on join, before
        `server:details` arrives, so `can` made a refusal a new member's first sight. */
     canViewReports: viewerPermissions.has("view_reports"),
   });
+  // One badge on Server settings for anything waiting in there: reports and bots.
+  const waitingBots = useWaitingBots(currentConnection, accessToken, viewerPermissions.has("manage_bots"));
+  const pendingReportCount = waitingReports + waitingBots;
 
   const viewingHost = currentlyViewingServer?.host;
   const [updateAvailable, setUpdateAvailable] = useState(() =>
@@ -632,6 +737,53 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
       : undefined),
     [dmSpace, selectedDmId, directConversations],
   );
+  const mlsSource = useMlsSource(viewingHost);
+  const discordImport = useDiscordImport({
+    host: viewingHost,
+    conversationId: activeDm?.conversation_id,
+    peer: activeDm?.kind === "dm" ? activeDm.other.server_user_id : undefined,
+    source: mlsSource,
+    maxFileBytes: viewingHost ? serverDetailsList[viewingHost]?.server_info?.upload_max_bytes : null,
+  });
+  const setImportOpen = discordImport.setDialogOpen;
+  const [receiptOpen, setReceiptOpen] = useState(false);
+  const jobKind = discordImport.state?.kind;
+  const jobKindBefore = useRef(jobKind);
+  useEffect(() => {
+    const finishing = jobKindBefore.current === "running" && (jobKind === "done" || jobKind === "missing");
+    jobKindBefore.current = jobKind;
+    if (!finishing) return;
+    toast((t) => (
+      <span>
+        Discord import finished.{" "}
+        <button
+          type="button"
+          className="gryt-link cursor-pointer border-0 bg-transparent p-0"
+          onClick={() => {
+            toast.dismiss(t.id);
+            setReceiptOpen(true);
+          }}
+        >
+          View details
+        </button>
+      </span>
+    ));
+  }, [jobKind]);
+
+  const reencryptProgress = useReencrypt({
+    host: viewingHost,
+    socket: viewingHost ? sockets[viewingHost] ?? null : null,
+    source: mlsSource,
+    me: currentServerUserId ?? undefined,
+    conversationId: activeDm?.conversation_id,
+    peer: activeDm?.kind === "dm" ? activeDm.other.server_user_id : undefined,
+    ready: reencryptReady,
+  });
+  const [askDismissed, setAskDismissed] = useState<Set<string>>(() => new Set());
+  const dmPeer = activeDm?.kind === "dm" ? activeDm.other : undefined;
+  const dmPeerAvatar = dmPeer && viewingHost
+    ? resolveAvatarSrc(dmPeer.avatar_file_id ? getUploadsFileUrl(viewingHost, dmPeer.avatar_file_id, { thumb: true }) : undefined, dmPeer.nickname, dmPeer.avatar_worn)
+    : undefined;
   // While you're in this conversation's call its header says so, and brings the call back (board 11).
   const inThisCall = !!activeDm && isConnected && currentServerConnected === currentlyViewingServer?.host && currentChannelConnected === activeDm?.conversation_id;
   const callSeconds = useCallClock(inThisCall, activeDm?.conversation_id ?? "");
@@ -695,7 +847,7 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
   const handleChannelClick = useHandleChannelClick({
     currentlyViewingServer, isConnected, currentServerConnected,
     currentChannelId, selectedChannelId, isConnecting,
-    showVoiceView, mediaAutoShownRef,
+    mediaAutoShownRef,
     setSelectedChannelId, setShowVoiceView, setPendingChannelId,
     setSettingsTab, setShowSettings, setLastSelectedChannelForServer,
     connect, applyChannelSettings, setIsMuted, setIsDeafened,
@@ -721,6 +873,15 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
   /** A ring carries a nickname and nothing else, or a person's appearance is a
       second copy to go stale. A caller not in the list draws from the name. */
   const caller = incomingCall ? memberListMap[incomingCall.from.server_user_id] : undefined;
+  useRinging(
+    incomingCall && viewingHost
+      ? {
+          conversationId: incomingCall.conversation_id,
+          host: viewingHost,
+          title: callerTitle(directConversations.find((c) => c.conversation_id === incomingCall.conversation_id), incomingCall.from.nickname),
+        }
+      : null,
+  );
   const callerAvatarUrl =
     caller?.avatarFileId && viewingHost
       ? getUploadsFileUrl(viewingHost, caller.avatarFileId, { thumb: true })
@@ -796,10 +957,6 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
           {mayCall && (ringing
             ? <Button size="small" tone="primary" onClick={stopCall}>Cancel</Button>
             : icon("Call", () => startCall(conversationId), <PiPhoneFill size={17} />))}
-          {mayCall && !ringing && icon("Video call", () => {
-            startCall(conversationId);
-            setCameraEnabled(true);
-          }, <PiCameraFill size={17} />)}
           {icon("Search messages", () => (dmSearchOpen ? setDmSearchOpen(false) : openDmSearch()), <PiMagnifyingGlassBold size={17} />, dmSearchOpen)}
           {icon("Conversation info", () => {
             setDmInfoOpen(!dmInfoOpen || dmSearchOpen);
@@ -832,7 +989,7 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
         ) : null}
       </div>
     );
-  }, [activeDm, viewerPermissions, outgoingCall, cancelCall, startCall, setGroupDialog, handleVoiceDisconnect, viewingHost, isTiny, isMobile, dmSearchOpen, dmInfoOpen, openDmSearch, setCameraEnabled, inThisCall, callSeconds, setShowVoiceView]);
+  }, [activeDm, viewerPermissions, outgoingCall, cancelCall, startCall, setGroupDialog, handleVoiceDisconnect, viewingHost, isTiny, isMobile, dmSearchOpen, dmInfoOpen, openDmSearch, inThisCall, callSeconds, setShowVoiceView]);
 
   /* The same member list the sidebar reads presence off — someone it hides
      from this viewer has no entry here either (GRYT-1467). */
@@ -926,12 +1083,12 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
             conversationId={activeDm.conversation_id}
             memberNames={memberNames}
             onAsk={(text) => sendChat(text, [])}
-            onCompare={() => setDmInfoOpen(true)}
+            onCompare={compareKeys}
           />
         )}
       </span>
     );
-  }, [activeDm, currentlyViewingServer, serverDetailsList, sealing, memberNames, sendChat]);
+  }, [activeDm, currentlyViewingServer, serverDetailsList, sealing, memberNames, sendChat, compareKeys]);
 
   /* Board 7, option A: behind ⋯ in a channel's header. The pin button stays beside it. */
   const channelMoreMenu = useMemo(() => {
@@ -1072,6 +1229,8 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
         sfuHosts={[]}
         stunHosts={[]}
         onTryNow={() => reconnectServer(currentlyViewingServer.host)}
+        publicHost={currentlyViewingServer.publicHost}
+        onUsePublic={() => switchToPublicAddress(currentlyViewingServer)}
       />
     );
   }
@@ -1126,12 +1285,25 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
   const voiceClientsSpeaking = fakeParticipantOptions
     ? { ...clientsSpeaking, ...fakeSpeech.speaking }
     : clientsSpeaking;
-  const hostMembers = withFakeMembers(
+  const hostMembers = withSharing(withFakeMembers(
     memberLists[host] || [],
     currentChannelId,
     fakeParticipantOptions,
-  );
+  ), hostClients);
   const serverName = serverDetails.server_info?.name || currentlyViewingServer.name;
+  const popOut = () => {
+    const title = `${hostChannels.find((c) => c.id === currentChannelId)?.name ?? "Voice"} · ${serverName}`;
+    void openCallWindow(title, () => {
+      setCallWindow(null);
+      setShowVoiceView(true);
+    }).then((opened) => {
+      if (!opened) return;
+      setCallWindow(opened);
+      setShowVoiceView(false);
+    });
+  };
+  const inCallWindow = (view: ReactNode) =>
+    callWindow ? <CallPopout callWindow={callWindow} onReturn={popIn}>{view}</CallPopout> : view;
 
   const onOpenSettings = () => {
     window.dispatchEvent(new CustomEvent("server_settings_open", { detail: { host } }));
@@ -1154,17 +1326,16 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
 
   /** One element for two layouts: the tiny window renders this and nothing else,
       and a second copy is thirty props to keep in step. */
+  const reachLine = connectionLine(currentConnectionStatus, isServerUnreachable, serverName || host);
+  const narrowDmDetail = isTiny || isMobile ? dmHeaderDetail : undefined;
+  const wideOrMobile = isMobile ? "mobile" : "wide";
+  const layout = isTiny ? "tiny" : wideOrMobile;
+  const sidePanel = sidePanelOf({ searchOpen, dmSpace, dmSearchOpen, activeDm: !!activeDm, isTiny });
   const chatView = dmSpace && !activeDm ? (
     <MessagesHome onSearch={openDmSearch} />
   ) : (
       <ChatView
-        offlineLine={
-          currentConnectionStatus === "reconnecting"
-            ? `Reconnecting to ${serverName || host}…`
-            : isServerUnreachable
-              ? `Can’t reach ${serverName || host}`
-              : undefined
-        }
+        offlineLine={reachLine?.long}
         /* Wide enough for the thread to sit beside the conversation rather than
            take the chat pane. */
         threadBeside={threadBeside}
@@ -1195,7 +1366,7 @@ forumTags={activeDm ? [] : activeChannelForumTags}
         conversationKind={activeDm ? "dm" : "channel"}
         headerAction={dmHeaderActions}
         headerLead={tinyBack}
-        headerDetail={activeDm ? (isTiny || isMobile ? dmHeaderDetail : undefined) : <ChannelDescription text={activeChannelDescription} />}
+        headerDetail={activeDm ? narrowDmDetail : <ChannelDescription text={activeChannelDescription} />}
         headerIcon={activeDm && !isTiny && !isMobile ? dmHeaderIcon : undefined}
         headerSubtitle={activeDm && !isTiny && !isMobile ? dmHeaderSubtitle : undefined}
         moreMenu={channelMoreMenu}
@@ -1238,9 +1409,20 @@ forumTags={activeDm ? [] : activeChannelForumTags}
         sfuHosts={serverDetails.sfu_hosts ?? (serverDetails.sfu_host ? [serverDetails.sfu_host] : [])}
         stunHosts={serverDetails.stun_hosts ?? []}
         onTryNow={() => reconnectServer(host)}
+        publicHost={currentlyViewingServer.publicHost}
+        onUsePublic={() => switchToPublicAddress(currentlyViewingServer)}
       />
     );
   }
+
+  // D6: their imported messages are arriving and none of yours are, so offer to add your side.
+  const peerHasImported = activeDm?.kind === "dm"
+    && visibleChatMessages.some((m) => m.imported_from && m.sender_server_id === activeDm.other.server_user_id);
+  const peerImported = peerHasImported && activeDm?.kind === "dm" && !askDismissed.has(activeDm.conversation_id)
+    && !visibleChatMessages.some((m) => m.imported_from && m.sender_server_id === currentServerUserId);
+  const job = discordImport.state;
+  const importState: DiscordImportState | null = (job?.kind === "running" ? { ...job, peerAdded: peerHasImported } : job)
+    ?? (peerImported && activeDm?.kind === "dm" ? { kind: "asked", by: activeDm.other.nickname } : null);
 
   return (
     <MemberCardActionsContext.Provider value={memberCardActions}>
@@ -1250,7 +1432,7 @@ forumTags={activeDm ? [] : activeChannelForumTags}
         {!dmSpace && currentConnectionStatus === "connected" && (
           <SecurityNoticeBanner host={host} serverInfo={serverDetails.server_info} hostedHere={!!hostedHere} />
         )}
-        {isTiny ? (
+        {layout === "tiny" && (
           /* One channel and no way to change it; the way out is a bigger window.
              A call is the exception, or the microphone has no button to close it. */
           <div className="flex" style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
@@ -1278,7 +1460,8 @@ forumTags={activeDm ? [] : activeChannelForumTags}
               streamSources={voiceStreamSources}
             />
           </div>
-        ) : isMobile ? (
+        )}
+        {layout === "mobile" && (
           <MobileServerView
             dmSpace={dmSpace}
             onOpenDm={requestOpenDm}
@@ -1359,7 +1542,8 @@ forumTags={activeDm ? [] : activeChannelForumTags}
             videoStreams={voiceVideoStreams}
             streamSources={voiceStreamSources}
           />
-        ) : (
+        )}
+        {layout === "wide" && (
           <div className="flex w-full gap-4" style={{
               flex: 1, overflow: "hidden",
             }}>
@@ -1402,12 +1586,14 @@ forumTags={activeDm ? [] : activeChannelForumTags}
               </div>
             ) : (
             <ServerSidebar
+              callPeek={readingCall ? undefined : { bubbles: callPeek.bubbles, newCount: callPeek.total - seenCallTotal }}
               sidebarOpen={leftSidebarOpen}
-              sidebarWidthPx={SIDEBAR_WIDTH_PX}
+              sidebarWidthPx={channelIcons ? CHANNEL_ICON_LIST_WIDTH : SIDEBAR_WIDTH_PX}
+              iconsOnly={channelIcons}
               hoverPx={SIDEBAR_HOVER_PX}
               contentRef={leftSidebarContentRef}
               isUnreachableWhileConnected={isServerUnreachable}
-              statusLine={currentConnectionStatus === "reconnecting" ? "Reconnecting…" : isServerUnreachable ? "Can’t reach it" : undefined}
+              statusLine={reachLine?.short}
               onMouseEnter={openLeftSidebar}
               onMouseLeave={closeLeftSidebar}
               serverName={serverName}
@@ -1428,7 +1614,8 @@ forumTags={activeDm ? [] : activeChannelForumTags}
               showVoiceView={showVoiceView}
               isConnecting={isConnecting}
               currentConnectionId={selfClientId}
-              selectedChannelId={visibleChannelId}
+              // The open text chat keeps the accent even while the call fills the middle and hides it.
+              selectedChannelId={dmSpace ? null : selectedChannelId}
               onChannelClick={handleChannelClickAndCloseDm}
               clientsSpeaking={voiceClientsSpeaking}
               canManage={canManage}
@@ -1445,26 +1632,20 @@ forumTags={activeDm ? [] : activeChannelForumTags}
               threadUnreadCounts={threadUnreadCounts}
               mentionCounts={mentionCounts}
               streamSources={voiceStreamSources}
+              videoStreams={voiceVideoStreams}
             />
             )}
-            <div className="flex grow" ref={voiceContainerRef} style={{ position: "relative", minWidth: 0 }}>
-              <VoiceView
-                showVoiceView={showVoiceView && (!isCompact || voiceFocused)}
+            <div className="flex grow" ref={attachVoiceContainer} style={{ position: "relative", minWidth: 0 }}>
+              {inCallWindow(<VoiceView
+                showVoiceView={callWindow ? true : showVoiceView}
                 /* Focusing a stream makes it the big one inside the panel and
                    leaves the app where it was. Hiding the chat is its own press. */
-                voiceWidth={
-                  chatTakenOver
-                    ? "100%"
-                    : voiceWidth === "0px"
-                      ? "0px"
-                      : isMaximized
-                        ? "100%"
-                        : `${shownVoiceWidth}px`
-                }
+                voiceWidth={callWindow ? "100%" : voiceWidthFor({ chatTakenOver, voiceWidth, isMaximized, shownVoiceWidth })}
+                fullWidth={callWindow ? undefined : voiceContainerWidth}
                 maxWidth={
                   // Both of these hide the chat, so the width reserved for a
                   // minimum chat column would otherwise cap the panel.
-                  isMaximized || chatTakenOver ? undefined : voiceMaxWidth
+                  callWindow || isMaximized || chatTakenOver ? undefined : voiceMaxWidth
                 }
                 serverHost={host}
                 currentServerConnected={currentServerConnected}
@@ -1483,11 +1664,37 @@ forumTags={activeDm ? [] : activeChannelForumTags}
                 videoStreams={voiceVideoStreams}
                 streamSources={voiceStreamSources}
                 onFocusChange={setVoiceFocused}
-                isMaximized={isMaximized}
-                onToggleMaximize={toggleMaximized}
+                isDragging={voiceResizing}
                 chatHidden={focusedChatHidden}
                 onToggleChat={toggleFocusedChat}
-              />
+                onPopOut={popOut}
+                inPopout={!!callWindow}
+                onShowChat={forcedFull && isVoiceOnThisServer && serverDetails?.channels?.find((c) => c.id === currentChannelId)?.textInVoice ? () => {
+                  setSelectedChannelId(currentChannelId);
+                  hiddenForChat.current = true;
+                  setVoiceStop("hidden");
+                } : undefined}
+                onOpenMessage={(messageId, reply) => {
+                  setSelectedChannelId(currentChannelId);
+                  if (chatPaneHidden) {
+                    if (forcedFull) hiddenForChat.current = true;
+                    setVoiceStop(forcedFull ? "hidden" : VOICE_PRESET_1);
+                  }
+                  setPendingJump({ conversationId: currentChannelId, messageId, nonce: Date.now(), reply });
+                }}
+              />)}
+              {voiceWidth !== "0px" && !chatTakenOver && !callWindow && (
+                <VoiceGrip
+                  containerRef={voiceContainerRef}
+                  room={voiceContainerWidth}
+                  stop={gripStop({ showVoiceView, isMaximized, voiceSize })}
+                  onStop={(stop) => {
+                    mediaAutoShownRef.current = false;
+                    setVoiceStop(stop);
+                  }}
+                  onResizing={setVoiceResizing}
+                />
+              )}
               <div style={{
                 display: chatPaneHidden ? "none" : "flex",
                 flex: 1,
@@ -1498,7 +1705,7 @@ forumTags={activeDm ? [] : activeChannelForumTags}
                 {chatView}
               </div>
             </div>
-            {searchOpen && !dmSpace ? (
+            {sidePanel === "search" && (
               <SearchPanel
                 key={searchStartIn?.value ?? "all"}
                 startIn={searchStartIn}
@@ -1518,7 +1725,8 @@ forumTags={activeDm ? [] : activeChannelForumTags}
                   });
                 }}
               />
-            ) : dmSpace && dmSearchOpen ? (
+            )}
+            {sidePanel === "dm-search" && (
               <SearchPanel
                 key={activeDm?.conversation_id ?? "all"}
                 socketConnection={null}
@@ -1545,7 +1753,8 @@ forumTags={activeDm ? [] : activeChannelForumTags}
                   setPendingJump({ conversationId: hit.conversation_id, messageId: hit.message_id, nonce: Date.now() });
                 }}
               />
-            ) : dmSpace && activeDm && !isTiny ? (
+            )}
+            {sidePanel === "dm-member" && activeDm && (
               /* Folds like the channel list rather than vanishing. The negative margin takes
                  back the row's gap, so a closed panel leaves no strip. */
               <motion.div
@@ -1575,6 +1784,7 @@ forumTags={activeDm ? [] : activeChannelForumTags}
               ) : (
                 <DmPersonPanel
                   host={host}
+                  compareSignal={compareSignal}
                   member={memberListMap[activeDm.other.server_user_id]}
                   conversation={activeDm}
                   pins={dmPins}
@@ -1587,15 +1797,34 @@ forumTags={activeDm ? [] : activeChannelForumTags}
                       forgetHiddenDm(dm.conversation_id);
                     });
                   }}
+                  onSearch={openDmSearch}
+                  onImport={() => setImportOpen(true)}
+                  reencryptProgress={reencryptProgress}
+                  importSection={importState && (
+                    <DiscordImportCard
+                      state={importState}
+                      peerName={activeDm.other.nickname}
+                      peerAvatar={dmPeerAvatar}
+                      onPause={discordImport.pause}
+                      onDetails={() => setReceiptOpen(true)}
+                      onAddMine={() => setImportOpen(true)}
+                      onDismiss={() => {
+                        if (importState.kind === "asked") setAskDismissed((prev) => new Set(prev).add(activeDm.conversation_id));
+                        else discordImport.dismiss();
+                      }}
+                    />
+                  )}
                 />
               )}
               </motion.div>
-            ) : (
+            )}
+            {sidePanel === "members" && (
             <MemberSidebarPanel
               // Closed for good, not collapsed: the server stops sending the list,
               // so an open panel would show whatever was last cached.
               sidebarOpen={rightSidebarOpen && canViewMembers && !dmSpace}
-              sidebarWidthPx={SIDEBAR_WIDTH_PX}
+              sidebarWidthPx={membersMode === "avatars" ? AVATAR_COLUMN_WIDTH : SIDEBAR_WIDTH_PX}
+              avatarsOnly={membersMode === "avatars"}
               hoverPx={SIDEBAR_HOVER_PX}
               contentRef={rightSidebarContentRef}
               isUnreachableWhileConnected={isServerUnreachable}
@@ -1626,11 +1855,7 @@ forumTags={activeDm ? [] : activeChannelForumTags}
           title={
             // The conversation's name when known, which for a group is not the one
             // person ringing. A call can arrive before `dm:list` catches up.
-            directConversations.find((c) => c.conversation_id === incomingCall.conversation_id)
-              ? conversationTitle(
-                  directConversations.find((c) => c.conversation_id === incomingCall.conversation_id)!,
-                )
-              : incomingCall.from.nickname
+            callerTitle(directConversations.find((c) => c.conversation_id === incomingCall.conversation_id), incomingCall.from.nickname)
           }
           avatarUrl={callerAvatarUrl}
           avatarWorn={callerAvatarWorn}
@@ -1682,6 +1907,29 @@ forumTags={activeDm ? [] : activeChannelForumTags}
       />
 
       {hideDialog}
+      {activeDm?.kind === "dm" && (
+        <DiscordImportDialog
+          open={discordImport.dialogOpen}
+          onOpenChange={discordImport.setDialogOpen}
+          peerName={activeDm.other.nickname}
+          peerAvatar={dmPeerAvatar}
+          onStart={(plan) => void discordImport.start(plan)}
+        />
+      )}
+      {(job?.kind === "done" || job?.kind === "missing") && (
+        <DiscordImportReceipt
+          open={receiptOpen}
+          onOpenChange={setReceiptOpen}
+          state={job}
+          canRetry={discordImport.canRetry}
+          canChangeLimit={viewerPermissions.can("manage_server")}
+          onRetry={discordImport.retry}
+          onDropPackage={() => {
+            setReceiptOpen(false);
+            setImportOpen(true);
+          }}
+        />
+      )}
       <ConfirmDialog
         open={!!pendingLeave}
         onOpenChange={(open) => {

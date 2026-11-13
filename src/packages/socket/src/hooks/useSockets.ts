@@ -1,19 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
-import { io, Socket } from "socket.io-client";
+import { io, type Socket } from "socket.io-client";
 
 import { deliverPluginMessage, setPluginApiMessageSender } from "@/addons";
 import connectMp3 from "@/audio/src/assets/connect.mp3";
 import disconnectMp3 from "@/audio/src/assets/disconnect.mp3";
-import messageSoundMp3 from "@/audio/src/assets/universfield-computer-mouse-click-02-383961.mp3";
 import type { MemberKeyState } from "@/common";
 import { singletonHook } from "@/common";
 import { effectiveContactPrefs, ensureSchemeKnown, getOwnServerUserId, getServerAccessToken, getServerRefreshToken, getServerWsBase, removeServerAccessToken, removeServerRefreshToken, useUnreadBadge, useUserId } from "@/common";
 import { initKeycloak } from "@/common/src/auth/keycloak";
+import { MESSAGE_SOUNDS, resolveSound } from "@/lib/soundPresets";
 import { useSettings } from "@/settings";
 import { useServerSettings } from "@/settings/src/hooks/useServerSettings";
 import { railEntriesJustStarted } from "@/settings/src/hostedServerRail";
-import {
+import type {
   Server,
   serverDetailsList,
   Servers,
@@ -21,9 +21,9 @@ import {
 
 import { type EmbeddedServerState, getElectronAPI } from "../../../../lib/electron";
 import { showReconnectGaveUpToast } from "../components/connectionToasts";
-import { MemberInfo } from "../components/MemberSidebar";
+import type { MemberInfo } from "../components/MemberSidebar";
 import { claimFakeHost, FAKE_VOICE_CHANNELS, fakeDmsOn, fakeHostNow, fakeMembers } from "../dev/fakeDms";
-import { Clients, ServerProfile } from "../types/clients";
+import type { Clients, ServerProfile } from "../types/clients";
 import { installContactGuard } from "../utils/contactFilter";
 import { browserAwayDeps, watchAway } from "../utils/desktopAway";
 import { watchFriendTraffic } from "../utils/friendList";
@@ -125,7 +125,7 @@ function useSocketsHook() {
 
   const connectSoundFile = customConnectSoundFile || connectMp3;
   const disconnectSoundFile = customDisconnectSoundFile || disconnectMp3;
-  const messageSoundFile = customMessageSoundFile || messageSoundMp3;
+  const messageSoundFile = resolveSound(customMessageSoundFile, MESSAGE_SOUNDS);
 
   const clientsRef = useRef(clients);
   useEffect(() => { clientsRef.current = clients; }, [clients]);

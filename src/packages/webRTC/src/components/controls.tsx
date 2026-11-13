@@ -1,5 +1,5 @@
 import { IconButton, Tooltip } from "@gryt/ui";
-import { estimateBitrate, getIsBrowserSupported, type ScreenShareQuality, SFUConnectionState, useCamera, useScreenShare, type VideoSendSettings } from "@gryt/voice";
+import { getIsBrowserSupported, SFUConnectionState, useCamera, useScreenShare } from "@gryt/voice";
 import { useSFU } from "@gryt/voice";
 import { voiceLog } from "@gryt/voice";
 import { useEffect, useRef, useState } from "react";
@@ -8,20 +8,24 @@ import toast from "react-hot-toast";
 import { useSettings } from "@/settings";
 import { useSockets } from "@/socket";
 import { useServerPermissions } from "@/socket/src/hooks/usePermissions";
-import { useVideoFraming } from "@/socket/src/hooks/useVideoFraming";
 
 import { getElectronAPI } from "../../../../lib/electron";
-import { PiMicrophoneFill, PiMicrophoneSlashFill, PiPhoneDisconnectFill, PiScanSmileyFill, PiSignOutFill, PiSlidersHorizontalFill, PiSpeakerHighFill, PiSpeakerSimpleHighFill, PiSpeakerSimpleSlashFill, PiSpeakerSlashFill } from "../../../../lib/icons";
+import { PiMicrophoneFill, PiMicrophoneSlashFill, PiPhoneDisconnectFill, PiSignOutFill, PiSlidersHorizontalFill, PiSpeakerHighFill, PiSpeakerSlashFill } from "../../../../lib/icons";
 import { screenAudioProblemMessage, screenAudioStreamId } from "../../../../lib/screenShareAudio";
 import { useInACall } from "../adapters/inACall";
+import { firstShareKey, shareMeta, useShareWindowsVersion } from "../adapters/shareWindows";
+import { type AnnouncedShare, useExtraScreenWindows } from "../adapters/useExtraScreenWindows";
 import { useScreenAudioMute } from "../adapters/useScreenAudioMute";
 import { useScreenAudioSources } from "../adapters/useScreenAudioSources";
 import { useVoiceSounds } from "../adapters/useVoiceSounds";
 import { attachEncodedTransform, type EncodedTransformHandle, isEncodedTransformSupported } from "../utils/encodedTransform";
 import { senderStreamId } from "../utils/senderStreamIds";
-import { liftScreenCapture, qualityBox } from "../utils/streamQuality";
-import { CallControlButton, LEAVE_CLASS } from "./CallControlButton";
+import { liftScreenCapture, screenSendSettings } from "../utils/streamQuality";
+import { BAR_BUTTON_STYLE, BAR_SOLO_CLASS, CallControlButton, LEAVE_CLASS, SPLIT_BUTTON_CLASS, SplitControl } from "./CallControlButton";
 import { CameraControl } from "./CameraControl";
+import { controlState } from "./controlState";
+import { HeadsetMenu } from "./HeadsetMenu";
+import { MicMenu } from "./MicMenu";
 import { NoiseReductionControl } from "./NoiseReductionControl";
 import { ScreenAudioSourcesModal } from "./ScreenAudioSourcesModal";
 import { ScreenShareControl } from "./ScreenShareControl";
@@ -49,6 +53,10 @@ function MaybeTooltip({
   );
 }
 
+
+const BAR_SIZE = "large";
+const BAR_ICON = 20;
+
 export function Controls({ onDisconnect }: ControlsProps) {
   // A call is hung up; a voice channel is only left (GRYT-1785).
   const inACall = useInACall();
@@ -72,11 +80,15 @@ export function Controls({ onDisconnect }: ControlsProps) {
   const { playDisconnect } = useVoiceSounds();
   const { cameraStream, cameraEnabled, setCameraEnabled } = useCamera();
   const { screenVideoStream, screenAudioStream, screenShareActive, nativeAudioActive, nativeEncodedCodec, subscribeEncodedFrames, stopScreenShare } = useScreenShare();
-  const { muted: screenAudioMuted, available: canMuteScreenAudio, setMuted: setScreenAudioMuted } = useScreenAudioMute();
+  const { available: canMuteScreenAudio } = useScreenAudioMute();
   const { supported: canPickAudioSources } = useScreenAudioSources();
+  const extraShares = useExtraScreenWindows();
+  const extraSharesKey = JSON.stringify(extraShares);
+  const shareVersion = useShareWindowsVersion();
   const [showAudioSourcesModal, setShowAudioSourcesModal] = useState(false);
+  const [micMenuOpen, setMicMenuOpen] = useState(false);
+  const [headsetMenuOpen, setHeadsetMenuOpen] = useState(false);
   const { sockets } = useSockets();
-  const { recentre: recentreFace, detecting: detectingFace } = useVideoFraming();
   const {
     setIsMuted, isMuted, isDeafened, setIsDeafened,
     isServerMuted, isServerDeafened,
@@ -156,29 +168,13 @@ export function Controls({ onDisconnect }: ControlsProps) {
         webrtcScreenVideoStreamId.current = senderStreamId(getPeerConnectionRef.current?.(), "screenVideo", screenVideoStream.id);
         prevScreenVideoRef.current = screenVideoStream;
 
-        let bitrate: number | null;
-        if (screenShareMaxBitrate > 0) {
-          bitrate = screenShareMaxBitrate;
-        } else {
-          bitrate = estimateBitrate(screenShareQuality as ScreenShareQuality, screenShareFps);
-          if (bitrate && screenShareGamingMode) {
-            bitrate = Math.min(Math.round(bitrate * 1.5), 50_000_000);
-          }
-        }
         const quality = screenShareQuality;
         const fps = screenShareFps;
-        const box = qualityBox(quality);
-        const isH264 = screenShareCodec === "h264" || (!screenShareCodec || screenShareCodec === "auto");
-        const settings: VideoSendSettings = {
-          priority: "high",
-          maxBitrate: bitrate ?? 50_000_000,
-          maxFramerate: fps,
-          maxSize: box ? { width: box.maxWidth, height: box.maxHeight } : null,
-          degradationPreference: screenShareGamingMode ? "maintain-framerate" : "maintain-resolution",
-          scalabilityMode: !isH264 && screenShareScalabilityMode !== "L1T1" ? screenShareScalabilityMode : undefined,
-          // Frames the native encoder made are injected past the encoder, so viewers can't size them (GRYT-1436).
-          followDemand: nativeEncodedCodec !== "h264",
-        };
+        const settings = screenSendSettings({
+          quality, fps, gamingMode: screenShareGamingMode, codec: screenShareCodec,
+          maxBitrate: screenShareMaxBitrate, scalabilityMode: screenShareScalabilityMode,
+          nativeH264: nativeEncodedCodec === "h264",
+        });
         voiceLog.info("SCREEN", `settings: maxBitrate=${settings.maxBitrate} maxFramerate=${fps} ceiling=${quality} scalabilityMode=${settings.scalabilityMode ?? "none"} degradationPreference=${settings.degradationPreference}`);
         // In order, so a quick second pick can't land before the first.
         screenLiftChain.current = screenLiftChain.current
@@ -297,7 +293,7 @@ export function Controls({ onDisconnect }: ControlsProps) {
   /* The last camera and screen payloads this client sent, readable from a listener
      wired once that would otherwise close over whatever they were then. */
   const lastCameraStateRef = useRef<{ enabled: boolean; streamId: string } | null>(null);
-  const lastScreenStateRef = useRef<{ enabled: boolean; videoStreamId: string; audioStreamId: string } | null>(null);
+  const lastScreenStateRef = useRef<{ enabled: boolean; videoStreamId: string; audioStreamId: string; shares?: AnnouncedShare[] } | null>(null);
 
   // Emit camera state to server
   useEffect(() => {
@@ -320,11 +316,14 @@ export function Controls({ onDisconnect }: ControlsProps) {
     if (!isConnected || !currentServerConnected) return;
     const socket = sockets[currentServerConnected];
     if (socket) {
-      const payload = {
-        enabled: screenShareActive,
+      const first: AnnouncedShare = {
         videoStreamId: (screenShareActive && webrtcScreenVideoStreamId.current) || screenVideoStream?.id || "",
         audioStreamId: screenAudioStreamId(screenShareActive, screenAudioStream, webrtcScreenAudioStreamId.current),
+        name: shareMeta(firstShareKey())?.name,
       };
+      const extra: AnnouncedShare[] = JSON.parse(extraSharesKey);
+      // Older servers read the single pair; `shares` carries every window and its name.
+      const payload = { enabled: screenShareActive, videoStreamId: first.videoStreamId, audioStreamId: first.audioStreamId, ...(screenShareActive ? { shares: [first, ...extra] } : {}) };
       lastScreenStateRef.current = payload;
       voiceLog.info("SCREEN", `controls: emitting voice:screen:state`, payload);
       if (screenShareActive && !payload.audioStreamId) {
@@ -332,7 +331,7 @@ export function Controls({ onDisconnect }: ControlsProps) {
       }
       socket.emit("voice:screen:state", payload);
     }
-  }, [screenShareActive, screenVideoStream, screenAudioStream, isConnected, currentServerConnected, sockets]);
+  }, [screenShareActive, screenVideoStream, screenAudioStream, isConnected, currentServerConnected, sockets, extraSharesKey, shareVersion]);
 
   /* Re-announce camera and screen after a reconnect, on `voice:room:granted` and
      not on the reconnect itself: permissions are not cached yet (GRYT-612). */
@@ -430,8 +429,8 @@ export function Controls({ onDisconnect }: ControlsProps) {
   return (
     <>
       {isBrowserSupported && (
-        // Extra media controls can exceed the 300px window Electron allows, so wrap them.
-        <div className="flex flex-wrap items-center justify-center gap-2 min-[400px]:gap-4">
+        // 48px targets (Fitts); below 400px, where Electron windows can go, they wrap and close up.
+        <div className="flex flex-wrap items-center justify-center gap-1.5">
           {/*
             Every control here is icon-only, so the tooltip text is also the
             accessible name — without aria-label a screen reader announced five
@@ -443,78 +442,75 @@ export function Controls({ onDisconnect }: ControlsProps) {
             an empty bubble on hover and kept it anchored to whichever control
             you hovered previously.
           */}
-          <MaybeTooltip content={isServerMuted ? "Server muted by admin" : null}>
-            <CallControlButton
-              state={isServerMuted ? "blocked" : isMuted ? "off" : "idle"}
-              aria-label={(isMuted || isServerMuted) ? "Unmute microphone" : "Mute microphone"}
-              onClick={handleMute}
-            >
-              {(isMuted || isServerMuted) ? <PiMicrophoneSlashFill size={16} /> : <PiMicrophoneFill size={16} />}
-            </CallControlButton>
-          </MaybeTooltip>
-
-          <MaybeTooltip content={isServerDeafened ? "Server deafened by admin" : null}>
-            <CallControlButton
-              state={isServerDeafened ? "blocked" : isDeafened ? "off" : "idle"}
-              aria-label={(isDeafened || isServerDeafened) ? "Undeafen" : "Deafen"}
-              onClick={handleDeafen}
-            >
-              {(isDeafened || isServerDeafened) ? <PiSpeakerSlashFill size={16} /> : <PiSpeakerHighFill size={16} />}
-            </CallControlButton>
-          </MaybeTooltip>
-
-          <NoiseReductionControl />
-
-          <CameraControl allowed={canIn(currentChannelConnected, "share_video")} />
-
-          {/* Only while the camera is on, because that is the only time it can
-              do anything, and next to the camera button because that is what
-              it acts on. The setting decides whether this also happens by
-              itself; the button is here so it never has to be found. */}
-          {cameraEnabled && (
-            <Tooltip title="Center my face">
-              <IconButton tone="neutral" size="xsmall"
-                aria-label="Center my face"
-                disabled={detectingFace}
-                onClick={() => void recentreFace()}
-              >
-                <PiScanSmileyFill size={16} />
-              </IconButton>
-            </Tooltip>
-          )}
-
-          <ScreenShareControl allowed={canIn(currentChannelConnected, "share_screen")} />
-
-          {/* Next to the share button because that is what it acts on, and
-              only while a share is actually carrying audio. */}
-          {canMuteScreenAudio && (
-            <Tooltip title={screenAudioMuted ? "Unmute the audio you're sharing" : "Mute the audio you're sharing"}>
+          <SplitControl
+            state={controlState(isServerMuted, isMuted)}
+            arrowOpen={micMenuOpen}
+            arrow={<MicMenu state={controlState(isServerMuted, isMuted)} open={micMenuOpen} onOpenChange={setMicMenuOpen} />}
+          >
+            <MaybeTooltip content={isServerMuted ? "Server muted by admin" : null}>
               <CallControlButton
-                state={screenAudioMuted ? "off" : "idle"}
-                aria-label={screenAudioMuted ? "Unmute the audio you're sharing" : "Mute the audio you're sharing"}
-                onClick={() => setScreenAudioMuted(!screenAudioMuted)}
+                size={BAR_SIZE}
+                style={BAR_BUTTON_STYLE}
+                state={controlState(isServerMuted, isMuted)}
+                idleClassName={SPLIT_BUTTON_CLASS}
+                aria-label={(isMuted || isServerMuted) ? "Unmute microphone" : "Mute microphone"}
+                onClick={handleMute}
               >
-                {screenAudioMuted ? <PiSpeakerSimpleSlashFill size={16} /> : <PiSpeakerSimpleHighFill size={16} />}
+                {(isMuted || isServerMuted) ? <PiMicrophoneSlashFill size={BAR_ICON} /> : <PiMicrophoneFill size={BAR_ICON} />}
               </CallControlButton>
-            </Tooltip>
-          )}
+            </MaybeTooltip>
+          </SplitControl>
 
-          {/* Only where the OS can take audio per application, which is
-              Windows. Everywhere else the mute above is the whole story. */}
+          <SplitControl
+            state={controlState(isServerDeafened, isDeafened)}
+            arrowOpen={headsetMenuOpen}
+            arrow={<HeadsetMenu state={controlState(isServerDeafened, isDeafened)} open={headsetMenuOpen} onOpenChange={setHeadsetMenuOpen} />}
+          >
+            <MaybeTooltip content={isServerDeafened ? "Server deafened by admin" : null}>
+              <CallControlButton
+                size={BAR_SIZE}
+                style={BAR_BUTTON_STYLE}
+                state={controlState(isServerDeafened, isDeafened)}
+                idleClassName={SPLIT_BUTTON_CLASS}
+                aria-label={(isDeafened || isServerDeafened) ? "Undeafen" : "Deafen"}
+                onClick={handleDeafen}
+              >
+                {(isDeafened || isServerDeafened) ? <PiSpeakerSlashFill size={BAR_ICON} /> : <PiSpeakerHighFill size={BAR_ICON} />}
+              </CallControlButton>
+            </MaybeTooltip>
+          </SplitControl>
+
+          <NoiseReductionControl size={BAR_SIZE} style={BAR_BUTTON_STYLE} idleClassName={BAR_SOLO_CLASS} iconSize={BAR_ICON} />
+
+          <CameraControl split size={BAR_SIZE} iconSize={BAR_ICON} allowed={canIn(currentChannelConnected, "share_video")} />
+
+          <ScreenShareControl size={BAR_SIZE} buttonStyle={BAR_BUTTON_STYLE} idleClassName={BAR_SOLO_CLASS} iconSize={BAR_ICON} allowed={canIn(currentChannelConnected, "share_screen")} takesRailPress />
+
+          {/* Only where the OS can take audio per application, which is Windows. */}
           {canMuteScreenAudio && canPickAudioSources && (
             <Tooltip title="Choose which apps you're sharing audio from">
-              <IconButton tone="neutral" size="xsmall"
+              <IconButton tone="neutral" size={BAR_SIZE} style={BAR_BUTTON_STYLE} className={BAR_SOLO_CLASS}
                 aria-label="Choose which apps you're sharing audio from"
                 onClick={() => setShowAudioSourcesModal(true)}
               >
-                <PiSlidersHorizontalFill size={16} />
+                <PiSlidersHorizontalFill size={BAR_ICON} />
               </IconButton>
             </Tooltip>
           )}
 
-          <IconButton tone="danger" size="xsmall" className={LEAVE_CLASS} aria-label={inACall ? "Hang up" : "Leave voice channel"} onClick={handleDisconnect}>
-            {inACall ? <PiPhoneDisconnectFill size={16} /> : <PiSignOutFill size={16} />}
-          </IconButton>
+          {/* The only solid red in the bar, so it reads as leaving rather than as another toggle. */}
+          <Tooltip title={inACall ? "Hang up" : "Leave"}>
+            <CallControlButton
+              size={BAR_SIZE}
+              style={BAR_BUTTON_STYLE}
+              state="idle"
+              className={LEAVE_CLASS}
+              aria-label={inACall ? "Hang up" : "Leave voice channel"}
+              onClick={handleDisconnect}
+            >
+              {inACall ? <PiPhoneDisconnectFill size={BAR_ICON} /> : <PiSignOutFill size={BAR_ICON} />}
+            </CallControlButton>
+          </Tooltip>
         </div>
       )}
 

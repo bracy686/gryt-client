@@ -11,7 +11,9 @@ import {
 } from "@/common";
 
 import {
+  PiArrowSquareOutBold,
   PiCaretRightBold,
+  PiCloudFill,
   PiHouseLineFill,
   PiInfoFill,
   PiLinkSimpleBold,
@@ -34,6 +36,18 @@ import {
 import { useSettings } from "../hooks/useSettings";
 import { sameServer } from "../serverId";
 import { CreateServerPanel } from "./createServer";
+
+const CLOUD_URL = "https://gryt.chat/cloud";
+
+const STEP_TITLE = { host: "Create your server", join: "Join a server", choose: "Add a server" };
+
+function stepDescription(step: "host" | "join" | null, isElectron: boolean): string {
+  if (step === "host") return "It runs on this machine, and your friends connect to you.";
+  if (step !== "join") return "Start one of your own, or join somebody else's.";
+  return isElectron
+    ? "Paste the invite a friend sent you, or the address of a server you already know."
+    : "Paste an invite, or enter the HTTPS address of a server you already know.";
+}
 
 export type { FetchInfo };
 
@@ -317,13 +331,13 @@ export function AddNewServer({
 
   /** "Sign in to join" rather than a disabled button and a tooltip, which touch
       and the keyboard cannot reach. Disabled only when a press does nothing. */
+  const joinLabel = serverInfo?.joinPolicy === "request" ? "Ask to join" : "Join";
+  const openAction = needsAccount
+    ? { label: "Sign in to join", tone: "primary" as const, disabled: false, run: () => void login() }
+    : { label: joinLabel, tone: "primary" as const, disabled: !canJoin, run: () => void handleJoin() };
   const joinAction = alreadyMember
     ? { label: "Already joined", tone: "secondary" as const, disabled: true, run: () => {} }
-    : needsAccount
-      ? { label: "Sign in to join", tone: "primary" as const, disabled: false, run: () => void login() }
-      : serverInfo?.joinPolicy === "request"
-        ? { label: "Ask to join", tone: "primary" as const, disabled: !canJoin, run: () => void handleJoin() }
-        : { label: "Join", tone: "primary" as const, disabled: !canJoin, run: () => void handleJoin() };
+    : openAction;
 
   return (
     <Dialog.Root
@@ -367,21 +381,11 @@ export function AddNewServer({
                 the gap under the title came from. */}
             <div className="flex flex-col gap-1 items-center">
               <Dialog.Title className="m-0 text-xl font-bold">
-                {step === "host"
-                  ? "Create your server"
-                  : step === "join"
-                    ? "Join a server"
-                    : "Add a server"}
+                {STEP_TITLE[step ?? "choose"]}
               </Dialog.Title>
 
               <Dialog.Description className="m-0 text-center text-sm">
-                {step === "host"
-                  ? "It runs on this machine, and your friends connect to you."
-                  : step === "join"
-                    ? isElectron
-                      ? "Paste the invite a friend sent you, or the address of a server you already know."
-                      : "Paste an invite, or enter the HTTPS address of a server you already know."
-                    : "Start one of your own, or join somebody else's."}
+                {stepDescription(step, isElectron)}
               </Dialog.Description>
             </div>
 
@@ -412,6 +416,8 @@ export function AddNewServer({
                     onPick={() => setMode("join")}
                   />
                 </div>
+
+                <CloudCard hint="Your own server, always online. We run it for you, so your friends can hang out even when you're not on." />
 
                 {/* Below a rule rather than between the two doors. The server we
                     run is a third answer, not a step inside the first one. */}
@@ -499,6 +505,21 @@ export function AddNewServer({
                       onHide={() => setOfficialServerHidden(true)}
                     />
                   </div>
+                )}
+
+                {/* A browser can't host, so this is its only way to start a server. */}
+                {!embeddedServerAvailable && serverHost.length === 0 && (
+                  <>
+                    <OrRule label="or start your own" />
+                    <CloudCard hint="Your own server, always online. We run it for you." />
+                    <span className="text-xs" style={{ color: "var(--gryt-neutral-11)" }}>
+                      Or run one on your own computer with the{" "}
+                      <a className="gryt-link" href="https://gryt.chat/download" target="_blank" rel="noopener noreferrer">
+                        desktop app
+                      </a>
+                      .
+                    </span>
+                  </>
                 )}
 
                 {/* The preview, and it stays a preview. There used to be a
@@ -711,14 +732,51 @@ function EntryCard({
 }
 
 /** The "or" between the two doors and the server we run. */
-function OrRule() {
+/** Hosting isn't sold yet; the card leads to the page about it, and payment never happens in the app. */
+function CloudCard({ hint }: { hint: string }) {
+  return (
+    <a
+      href={CLOUD_URL}
+      target="_blank"
+      rel="noopener noreferrer"
+      data-tour="choose-cloud"
+      className="flex items-center gap-3 rounded-(--gryt-radius-md) border border-gryt-border bg-gryt-surface text-gryt-text w-full p-4 no-underline transition-colors hover:border-(--gryt-accent-9)"
+    >
+      <span
+        className="flex items-center justify-center"
+        style={{
+          width: 32,
+          height: 32,
+          borderRadius: "var(--gryt-radius-md)",
+          background: "var(--gryt-accent-a3)",
+          color: "var(--gryt-accent-11)",
+          flexShrink: 0,
+        }}
+      >
+        <PiCloudFill size={17} />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="flex items-center gap-2 text-sm font-bold">
+          Gryt Cloud
+          <Chip>Soon</Chip>
+        </span>
+        <span className="text-xs" style={{ color: "var(--gryt-neutral-11)" }}>
+          {hint}
+        </span>
+      </span>
+      <PiArrowSquareOutBold size={14} style={{ color: "var(--gryt-neutral-11)", flexShrink: 0 }} aria-label="Opens in your browser" />
+    </a>
+  );
+}
+
+function OrRule({ label = "or" }: { label?: string }) {
   return (
     <div
       className="flex items-center gap-3 text-xs uppercase"
       style={{ color: "var(--gryt-neutral-11)", letterSpacing: "0.08em" }}
     >
       <span className="h-px flex-1" style={{ background: "var(--gryt-border)" }} />
-      or
+      {label}
       <span className="h-px flex-1" style={{ background: "var(--gryt-border)" }} />
     </div>
   );
@@ -805,6 +863,18 @@ function OfficialServerOffer({
   );
 }
 
+function PreviewLine({ loading, error, privateInfo, text }: {
+  loading: boolean;
+  error: string | null;
+  privateInfo: boolean;
+  text: string;
+}) {
+  if (loading) return <Skeleton width="5rem" height="0.75rem" />;
+  if (error) return <span className="text-xs">{error}</span>;
+  if (privateInfo) return <span className="text-xs">Public info is off. An invite code can still get you in.</span>;
+  return <span className="text-xs line-clamp-2">{text}</span>;
+}
+
 function ServerPreview({
   host,
   info,
@@ -842,21 +912,7 @@ function ServerPreview({
               rather than the server's profile, and the sentence saying what
               somewhere is should not be behind a press. The address is not
               repeated — it is in the field directly above. */}
-          {loading ? (
-            <Skeleton width="5rem" height="0.75rem" />
-          ) : error ? (
-            <span className="text-xs">
-              {error}
-            </span>
-          ) : privateInfo ? (
-            <span className="text-xs">
-              Public info is off. An invite code can still get you in.
-            </span>
-          ) : (
-            <span className="text-xs line-clamp-2">
-              {info?.description || host}
-            </span>
-          )}
+          <PreviewLine loading={loading} error={error} privateInfo={privateInfo} text={info?.description || host} />
         </div>
 
         {/* The two facts about this server, on one right edge: what it costs

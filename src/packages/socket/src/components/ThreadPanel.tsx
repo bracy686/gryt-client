@@ -2,7 +2,7 @@ import { Button, Divider, IconButton, Menu, Tooltip } from "@gryt/ui";
 import type { ReactNode } from "react";
 import { Fragment, useEffect, useLayoutEffect, useRef } from "react";
 
-import { PiCaretLeftBold, PiChatsTeardropFill, PiCheck, PiDotsThreeVerticalBold, PiX } from "../../../../lib/icons";
+import { PiArrowsInSimpleBold, PiArrowsOutSimpleBold, PiCaretLeftBold, PiChatsTeardropFill, PiCheck, PiDotsThreeVerticalBold, PiX } from "../../../../lib/icons";
 import { THREAD_PANEL_WIDTH } from "../lib/narrowLayout";
 import type { ChatMessage } from "./chatUtils";
 import { EmojiText } from "./EmojiText";
@@ -58,9 +58,14 @@ interface ThreadPanelProps {
    * takes the whole chat pane otherwise, rather than covering half a message row.
    */
   beside?: boolean;
+  /** Taking the whole chat pane by choice, though it would fit beside. */
+  expanded?: boolean;
+  /** Absent where there is no room for the small panel to go back to. */
+  onToggleExpand?: () => void;
+  channelName?: string;
 }
 
-export function ThreadPanel({ thread, root, messages, loading, renderMessage, renderComposer, hasOlder, loadingOlder, onLoadOlder, typingIndicator, onClose, onSetStatus, forumTags = [], onSetTags, error, onRetry, beside = false }: ThreadPanelProps) {
+export function ThreadPanel({ thread, root, messages, loading, renderMessage, renderComposer, hasOlder, loadingOlder, onLoadOlder, typingIndicator, onClose, onSetStatus, forumTags = [], onSetTags, error, onRetry, beside = false, expanded = false, onToggleExpand, channelName }: ThreadPanelProps) {
   /* What chat:send checks before it takes a reply. Drawing a composer the
      server will refuse is what GRYT-1389 was about. */
   const takesReplies = thread.status !== "closed" && thread.locked !== true;
@@ -103,11 +108,12 @@ export function ThreadPanel({ thread, root, messages, loading, renderMessage, re
   useLayoutEffect(() => {
     const el = scrollRef.current;
     const firstId = messages[0]?.message_id ?? null;
-    const grew = anchorRef.current !== null && firstId !== firstIdRef.current;
+    const anchor = anchorRef.current;
+    const grew = anchor !== null && firstId !== firstIdRef.current;
     firstIdRef.current = firstId;
     if (!el) return;
     if (grew) {
-      el.scrollTop = el.scrollHeight - anchorRef.current!;
+      el.scrollTop = el.scrollHeight - anchor;
       anchorRef.current = null;
       return;
     }
@@ -116,15 +122,23 @@ export function ThreadPanel({ thread, root, messages, loading, renderMessage, re
     if (pinnedRef.current) el.scrollTop = el.scrollHeight;
   }, [messages, root, loading]);
 
+  const resizable = beside || expanded;
+
   return (
+    <>
+    {/* Holds the column while the panel grows over it, so the conversation behind doesn't reflow every frame. */}
+    {resizable && <div aria-hidden style={{ width: THREAD_PANEL_WIDTH, flexShrink: 0 }} />}
     <aside
       aria-label="Thread"
+      className="gryt-thread-panel"
       data-beside={beside ? "yes" : "no"}
       style={{
-        /* Beside: a column in the row, so the conversation keeps the width it is
-           drawn at. Otherwise the whole pane, so nothing is left half covered. */
-        ...(beside
-          ? { position: "relative", width: THREAD_PANEL_WIDTH, flexShrink: 0, borderLeft: "1px solid var(--gryt-neutral-6)" }
+        ...(resizable
+          ? {
+              position: "absolute", top: 0, right: 0, bottom: 0, zIndex: 20,
+              width: expanded ? "100%" : THREAD_PANEL_WIDTH,
+              borderLeft: "1px solid var(--gryt-neutral-6)",
+            }
           : { position: "absolute", inset: 0, zIndex: 20 }),
         display: "flex", flexDirection: "column", minWidth: 0,
         background: "var(--gryt-neutral-1)",
@@ -152,6 +166,7 @@ export function ThreadPanel({ thread, root, messages, loading, renderMessage, re
             {thread.title ? <EmojiText text={thread.title} /> : "Thread"}
           </div>
           <div style={{ fontSize: 11, color: "var(--gryt-neutral-10)" }}>
+            {expanded && channelName && `In #${channelName} · `}
             {thread.reply_count} {thread.reply_count === 1 ? "reply" : "replies"}
             {thread.status === "solved" && <span style={{ color: "var(--gryt-accent-11)", marginLeft: 8 }}>Solved</span>}
             {!takesReplies && <span style={{ color: "var(--gryt-neutral-11)", marginLeft: 8 }}>Closed</span>}
@@ -209,6 +224,18 @@ export function ThreadPanel({ thread, root, messages, loading, renderMessage, re
             </Menu.Portal>
           </Menu.Root>
         )}
+        {onToggleExpand && (
+          <Tooltip title={expanded ? "Back to the small panel" : "Expand thread"}>
+            <IconButton
+              tone="neutral"
+              size="xsmall"
+              aria-label={expanded ? "Back to the small panel" : "Expand thread"}
+              onClick={onToggleExpand}
+            >
+              {expanded ? <PiArrowsInSimpleBold size={14} /> : <PiArrowsOutSimpleBold size={14} />}
+            </IconButton>
+          </Tooltip>
+        )}
         {onSetStatus && beside && (
           <Divider orientation="vertical" className="my-1 self-stretch" />
         )}
@@ -262,18 +289,19 @@ export function ThreadPanel({ thread, root, messages, loading, renderMessage, re
         {/* 14 inline, matching the header, the tag row and the composer. Without
             it an avatar sits against the panel edge while the channel's does not. */}
         <div ref={scrollRef} onScroll={onScroll} style={{ flex: 1, overflowY: "auto", paddingBottom: 8, paddingInline: 14 }}>
-        {root ? (
+        {root && (
           <div className="mb-1 border-b border-gryt-border pb-1.5">
             {renderMessage(root)}
           </div>
-        ) : !loading && !error ? (
+        )}
+        {!root && !loading && !error && (
           /* The root can be gone while the replies are not: deleting it takes
              the thread with it, but a blocked sender only hides it. */
           <div className="mb-1 border-b border-gryt-border pb-1.5" style={{ padding: "12px 2px", fontSize: 13, color: "var(--gryt-neutral-10)" }}>
             The message this thread started from is gone.
           </div>
-        ) : null}
-        {error ? (
+        )}
+        {error && (
           <div style={{ padding: 16, fontSize: 13, color: "var(--gryt-neutral-11)", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 10 }}>
             <span>{error}</span>
             {onRetry && (
@@ -282,11 +310,14 @@ export function ThreadPanel({ thread, root, messages, loading, renderMessage, re
               </Button>
             )}
           </div>
-        ) : loading ? (
+        )}
+        {!error && loading && (
           <div style={{ padding: 16, fontSize: 13, color: "var(--gryt-neutral-10)" }}>Loading…</div>
-        ) : messages.length === 0 && root ? (
+        )}
+        {!error && !loading && messages.length === 0 && root && (
           <div style={{ padding: 16, fontSize: 13, color: "var(--gryt-neutral-10)" }}>No replies yet. Start the conversation.</div>
-        ) : (
+        )}
+        {!error && !loading && (messages.length > 0 || !root) && (
           messages.map((m) => (
             <Fragment key={m.message_id}>{renderMessage(m)}</Fragment>
           ))
@@ -312,5 +343,6 @@ export function ThreadPanel({ thread, root, messages, loading, renderMessage, re
         )}
       </div>
     </aside>
+    </>
   );
 }

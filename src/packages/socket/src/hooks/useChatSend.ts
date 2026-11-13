@@ -1,6 +1,6 @@
-import { Dispatch, MutableRefObject, SetStateAction, useCallback, useEffect, useRef, useState } from "react";
+import { type Dispatch, type MutableRefObject, type SetStateAction, useCallback, useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
-import { Socket } from "socket.io-client";
+import type { Socket } from "socket.io-client";
 import { v4 as uuidv4 } from "uuid";
 
 import type { SealDecision, SealedAttachmentKey } from "@/common";
@@ -214,6 +214,8 @@ export function useChatSend({
      the server changes, and what the old one still held fails with its text back. */
   useEffect(() => {
     if (!currentConnection) return;
+    // socket.io's generic on/off don't fit QueueSocket's plain signature.
+    // eslint-disable-next-line no-restricted-syntax
     const queue = new SendQueue(currentConnection as unknown as ConstructorParameters<typeof SendQueue>[0], {
       emit: (nonce) => emitSendRef.current(nonce),
       onGiveUp: (nonce) => {
@@ -297,9 +299,9 @@ export function useChatSend({
       // say something: a message that vanishes silently reads as one that sent.
       if (isRateLimitedRef.current) return;
       if (isVoiceChannelTextChatRef.current && !textInVoiceEnabledRef.current) {
-        toast.error("Text chat is disabled in this voice channel");
+        toast.error("Text chat is switched off in this channel");
       } else if (isVoiceChannelTextChatRef.current && !isConnectedRef.current) {
-        toast.error("You must be connected to this voice channel to send messages");
+        toast.error("Join the call to chat here");
       } else if (!isConnectedRef.current) {
         toast.error("Not connected to this server");
       } else {
@@ -330,9 +332,10 @@ export function useChatSend({
 
       if (files.length > 0) {
         const dims = await Promise.all(files.map((f) => getMediaDimensions(f)));
-        localAttachmentIds = files.map(() => `local-${uuidv4()}`);
+        const ids = files.map(() => `local-${uuidv4()}`);
+        localAttachmentIds = ids;
         localEnriched = files.map((f, i) => ({
-          file_id: localAttachmentIds![i],
+          file_id: ids[i],
           mime: f.type || null,
           size: f.size,
           original_name: f.name,
@@ -363,13 +366,13 @@ export function useChatSend({
         [cacheKeyFor(activeConversationId)]: [...(prev[cacheKeyFor(activeConversationId)] || []), optimistic],
       }));
 
-      if (shouldRefreshToken(accessToken!)) {
+      if (accessToken && shouldRefreshToken(accessToken)) {
         const host = currentlyViewingServer?.host || "";
         const refreshToken = getServerRefreshToken(host);
         if (refreshToken) {
-          currentConnection!.emit("token:refresh", { refreshToken });
+          currentConnection?.emit("token:refresh", { refreshToken });
         } else {
-          currentConnection!.emit("token:refresh", { accessToken });
+          currentConnection?.emit("token:refresh", { accessToken });
         }
         for (let i = 0; i < 10; i++) {
           await new Promise((r) => setTimeout(r, 100));
@@ -399,10 +402,8 @@ export function useChatSend({
 
           // Keyed by the id the server assigned, known only now. The bytes were
           // bound to a value the package chose — see `sealAttachment`.
-          const keyed = uploaded.filter((u) => u.meta);
-          attachmentKeys = keyed.length
-            ? Object.fromEntries(keyed.map((u) => [u.fileId, u.meta!]))
-            : null;
+          const keyed = uploaded.flatMap((u) => (u.meta ? [[u.fileId, u.meta] as const] : []));
+          attachmentKeys = keyed.length ? Object.fromEntries(keyed) : null;
         } catch (err) {
           const msg = err instanceof Error && err.message ? err.message : "Failed to upload file(s)";
           toast.error(msg, { duration: 8000 });

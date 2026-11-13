@@ -95,19 +95,10 @@
   --gryt-z-panel: 32;
   --gryt-z-menu: 35; /* @gryt/ui popups, which open from any of the above */
   --gryt-z-tour: 40; /* onboarding coach marks */
-  --gryt-z-lightbox: 50; /* image lightbox and its controls */
   --gryt-z-debug: 60; /* debug overlay */
   --gryt-z-chrome: 70; /* Electron titlebar; window controls stay reachable */
   --gryt-z-toast: 80; /* transient notifications */
   --gryt-z-splash: 90; /* auth loading overlay */
-
-  /* The tour's cursor.
-   *
-   * Not from the palette on purpose. The spotlight ring, the buttons it
-   * presses and half the chrome are all accent purple, so a cursor drawn from
-   * the same family disappeared into what it was pointing at. This is the one
-   * thing on screen whose whole job is to be followed. */
-  --gryt-tour-cursor: #ff4d4f;
 }
 
 /* The library's portaled overlays, given a home on the scale above. Without
@@ -427,8 +418,9 @@ body {
 .chat-editor-textarea {
   padding: 10px 6px 10px 18px;
   min-height: 21px;
-  max-height: 200px;
+  max-height: 66vh;
   overflow-y: auto;
+  transition: height 0.36s cubic-bezier(0.4, 0, 0.2, 1);
   outline: none;
   border: none;
   background: transparent;
@@ -441,6 +433,19 @@ body {
   box-sizing: border-box;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* Folded to one line while you're elsewhere; the fade says there's more. */
+.chat-editor-textarea[data-collapsed] {
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 60%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-editor-textarea,
+  .chat-editor-format-btn {
+    transition: none;
+  }
 }
 
 .chat-editor-textarea:empty::before {
@@ -489,7 +494,8 @@ body {
   display: block;
 }
 
-.emoji-upload-preview-wrap[data-status="uploading"] .emoji-upload-preview-img {
+.emoji-upload-preview-wrap[data-status="uploading"] .emoji-upload-preview-img,
+.emoji-upload-preview-wrap[data-status="downloading"] .emoji-upload-preview-img {
   filter: grayscale(1);
   opacity: 0.45;
 }
@@ -644,6 +650,164 @@ body {
   display: flex;
   align-items: flex-end;
   gap: 0;
+}
+
+/* The Lexical composer, while it's tried behind gryt.lexicalComposer. */
+.chat-editor-lexical-field {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-editor-lexical-field .chat-editor-textarea {
+  min-height: calc(1.5em + 20px);
+  max-height: 66vh;
+}
+
+.chat-editor-lexical-placeholder {
+  position: absolute;
+  top: 10px;
+  left: 18px;
+  color: var(--gryt-neutral-10);
+  pointer-events: none;
+}
+
+.chat-editor-lexical .lx-p {
+  margin: 0;
+}
+
+.chat-editor-lexical .lx-bold { font-weight: 700; }
+.chat-editor-lexical .lx-italic { font-style: italic; }
+.chat-editor-lexical .lx-strike { text-decoration: line-through; }
+
+.chat-editor-lexical .lx-code {
+  font-family: var(--code-font-family, monospace);
+  font-size: 0.85em;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: var(--gryt-neutral-4);
+}
+
+.chat-editor-lexical .lx-h1 { margin: 0; font-size: 1.5em; font-weight: 700; }
+.chat-editor-lexical .lx-h2 { margin: 0; font-size: 1.25em; font-weight: 700; }
+.chat-editor-lexical .lx-h3 { margin: 0; font-size: 1.1em; font-weight: 700; }
+
+.chat-editor-lexical .lx-quote {
+  margin: 0;
+  padding-left: 10px;
+  border-left: 3px solid var(--gryt-neutral-7);
+  color: var(--gryt-neutral-11);
+}
+
+.chat-editor-lexical .lx-ul,
+.chat-editor-lexical .lx-ol {
+  margin: 0;
+  padding-left: 22px;
+}
+
+.chat-editor-lexical .lx-ul { list-style: disc; }
+.chat-editor-lexical .lx-ol { list-style: decimal; }
+.chat-editor-lexical .lx-ul .lx-ul { list-style: circle; }
+.chat-editor-lexical .lx-li-nested { list-style: none; }
+
+.chat-editor-lexical .lx-codeblock {
+  display: block;
+  margin: 4px 0;
+  padding: 8px 10px;
+  border-radius: var(--gryt-radius-sm);
+  background: var(--gryt-neutral-1);
+  font-family: var(--code-font-family, monospace);
+  font-size: 0.85em;
+  white-space: pre;
+}
+
+/* Pinned to the box's top left, so selecting different text never moves it. */
+.chat-editor-format-anchor {
+  position: absolute;
+  z-index: 20;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+}
+
+.chat-editor-format-bar {
+  position: absolute;
+  bottom: 8px;
+  left: 0;
+  transform-origin: bottom left;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  background: var(--gryt-neutral-4);
+  border: 1px solid var(--gryt-neutral-7);
+  border-radius: var(--gryt-radius-control);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
+}
+
+/* Stacked above the main bar, which stays put underneath. */
+.chat-editor-format-sub {
+  bottom: calc(100% + 6px);
+  left: 0;
+  padding: 4px 6px;
+}
+
+.chat-editor-format-group {
+  display: flex;
+  gap: 2px;
+}
+
+.chat-editor-format-group + .chat-editor-format-group {
+  margin-left: 4px;
+  padding-left: 6px;
+  border-left: 1px solid var(--gryt-neutral-6);
+}
+
+.chat-editor-link-input {
+  width: 260px;
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--gryt-radius-control);
+  background: var(--gryt-neutral-2);
+  color: var(--gryt-neutral-12);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.chat-editor-link-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--gryt-accent-8);
+}
+
+.chat-editor-format-btn {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--gryt-radius-control);
+  background: transparent;
+  color: var(--gryt-neutral-11);
+  cursor: pointer;
+}
+
+.chat-editor-format-btn {
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.chat-editor-format-btn[aria-pressed="true"],
+.chat-editor-format-btn[aria-expanded="true"] {
+  background: var(--gryt-accent-a4);
+  color: var(--gryt-accent-11);
+}
+
+.chat-editor-format-btn:hover,
+.chat-editor-format-btn:focus-visible {
+  background: var(--gryt-neutral-6);
+  color: var(--gryt-neutral-12);
 }
 
 .chat-editor-attach-btn {
@@ -901,151 +1065,45 @@ body {
   opacity: 0.85;
 }
 
-/* ── Image Lightbox ───────────────────────────────────────── */
+/* ── Image lightbox: react-motion-lightbox, in Gryt's colours ── */
 
-/* Darker than a dialog's dim, and blurred, so the chat drops away behind the picture. */
-.lightbox-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: var(--gryt-z-lightbox);
-  background: rgba(6, 7, 10, 0.94);
-  backdrop-filter: blur(8px);
-  overflow: hidden;
-  color: #f2f2f5;
+/* Darker than a dialog's dim, so the chat drops away behind the picture; clear of the window's own titlebar. */
+.rml.gryt-lightbox {
+  --rml-backdrop: rgba(6, 7, 10, 0.94);
+  --rml-color: #f2f2f5;
+  --rml-muted: rgba(255, 255, 255, 0.55);
+  --rml-border: rgba(255, 255, 255, 0.2);
+  --rml-accent: var(--gryt-accent-9);
+  --rml-focus: var(--gryt-accent-9);
+  --rml-frame: var(--gryt-accent-9);
+  --rml-padding: calc(var(--titlebar-inset, 0px) + 1rem) clamp(1rem, 4vw, 3rem) 1rem;
 }
 
-.lightbox-stage {
-  position: absolute;
-  inset: calc(var(--titlebar-inset, 0px) + 72px) 0 104px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-}
-
-.lightbox-image {
-  max-width: min(92vw, 100%);
-  max-height: 100%;
-  object-fit: contain;
-  user-select: none;
-  border-radius: var(--gryt-radius-sm);
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
-  transition: transform 0.08s ease-out;
-}
-
-.lightbox-video { width: min(92vw, 1280px); max-height: 100%; }
-
-.lightbox-top {
-  position: absolute;
-  top: var(--titlebar-inset, 0px);
-  left: 0;
-  right: 0;
-  height: 72px;
-  padding: 0 24px;
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  gap: 16px;
-  background: linear-gradient(rgba(0, 0, 0, 0.6), transparent);
-  z-index: 1;
-}
-.lightbox-who { display: flex; flex-direction: column; min-width: 0; }
-.lightbox-who-name { font-weight: 700; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.lightbox-who-detail { font-size: 13px; color: rgba(255, 255, 255, 0.6); }
-.lightbox-counter { font-size: 15px; font-weight: 700; }
-.lightbox-actions { display: flex; gap: 8px; justify-content: flex-end; }
-
-.lightbox-toolbar-btn {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  border: 0;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.9);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.15s, color 0.15s;
-}
-.lightbox-toolbar-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.18); color: #fff; }
-.lightbox-toolbar-btn:disabled { opacity: 0.35; cursor: default; }
-
-.lightbox-zoom-chip {
-  height: 40px;
-  padding: 0 14px;
-  border-radius: 20px;
-  border: 0;
-  background: var(--gryt-accent-9);
-  color: var(--gryt-accent-contrast, #14161d);
-  font: inherit;
-  font-size: 14px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.lightbox-arrow {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 52px;
-  height: 52px;
-  border-radius: 50%;
-  border: 0;
-  background: rgba(20, 22, 28, 0.75);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
-  cursor: pointer;
-  z-index: 1;
-}
-.lightbox-arrow:hover { background: rgba(40, 42, 50, 0.9); }
-.lightbox-arrow[data-side="left"] { left: 28px; }
-.lightbox-arrow[data-side="right"] { right: 28px; }
-
-.lightbox-strip {
-  position: absolute;
-  left: 50%;
-  bottom: 24px;
-  transform: translateX(-50%);
-  max-width: calc(100vw - 48px);
-  overflow-x: auto;
-  display: flex;
-  gap: 8px;
-  padding: 8px;
-  border-radius: 16px;
-  background: rgba(20, 22, 28, 0.75);
-  z-index: 1;
-}
-.lightbox-thumb {
+/* Gryt's Tooltip portals out of the dialog and would sit under it, so these draw inside it. */
+.gryt-lightbox [data-tip] {
   position: relative;
-  flex: none;
-  width: 56px;
-  height: 56px;
-  padding: 0;
-  border-radius: 10px;
-  border: 2px solid transparent;
-  background: rgba(255, 255, 255, 0.06);
-  overflow: hidden;
-  opacity: 0.55;
-  cursor: pointer;
 }
-.lightbox-thumb[data-active] { border-color: var(--gryt-accent-9); opacity: 1; }
-.lightbox-thumb:hover { opacity: 1; }
-.lightbox-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.lightbox-thumb-play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; }
 
-.lightbox-hint {
+.gryt-lightbox [data-tip]:is(:hover, :focus-visible)::after {
+  content: attr(data-tip);
   position: absolute;
-  right: 24px;
-  bottom: 40px;
-  color: rgba(255, 255, 255, 0.55);
-  font-size: 13px;
-  pointer-events: none;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 8px;
+  border-radius: var(--gryt-radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #2b2c33;
+  color: #f2f2f5;
+  font-size: 12px;
+  line-height: 1.3;
   white-space: nowrap;
-  user-select: none;
+  pointer-events: none;
+}
+
+.gryt-lightbox-video {
+  width: 100%;
+  height: 100%;
 }
 
 /* ── File Card (generic file attachment) ──────────────────── */
@@ -1095,9 +1153,22 @@ body {
 
 /* ── Link Embeds ─────────────────────────────────────────── */
 
+/* Wrapping flex, not a grid: the message around it is fit-content, where an auto-fill grid stays one column. */
+.link-embed-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.link-embed-grid:has(> :nth-child(2)) > * {
+  width: 420px;
+}
+
 .link-embed-container {
   position: relative;
-  max-width: 420px;
+  max-width: min(420px, 100%);
   overflow: hidden;
   border-radius: var(--gryt-radius-md);
 }
@@ -1484,6 +1555,15 @@ body {
 
 .markdown-message :is(.md-p, ul, ol, pre, blockquote, .md-table, .markdown-image-wrap) {
   margin-block: calc(var(--md-unit) * 0.5);
+}
+
+/* Spaced the way the message box draws it: a newline is the next line, a blank line is one empty line. */
+.markdown-message .md-br {
+  display: block;
+}
+
+.markdown-message .md-p + .md-p {
+  margin-top: calc(var(--md-unit) * 1.5);
 }
 
 /* A heading belongs to the block under it, so it gets more room above than
@@ -2054,6 +2134,13 @@ body {
   border-top: 1px solid var(--gryt-border);
 }
 
+.whats-new-change p.whats-new-thanks {
+  grid-column: 2;
+  margin-top: 0.375rem;
+  font-style: italic;
+  color: var(--gryt-neutral-11);
+}
+
 /* Stretched to the column, so Fixed and Changed are one width down the list. */
 .whats-new-kind {
   justify-content: center;
@@ -2083,6 +2170,12 @@ body {
   margin: 0;
   font-size: 0.9rem;
   line-height: 1.52;
+}
+
+/* The release's summary, so it reads as the release's subtitle, not a stray sentence. */
+.whats-new-line {
+  font-weight: 600;
+  color: var(--gryt-neutral-12);
 }
 
 /* A release with changes: its line, its security fixes in a block of their own, then
@@ -2443,6 +2536,41 @@ body {
 .poll-count { width: 60px; text-align: right; font-size: 13px; color: var(--gryt-neutral-11); }
 .poll-link { padding: 0; border: 0; background: none; color: var(--gryt-accent-11); font: inherit; cursor: pointer; }
 .poll-link:hover { text-decoration: underline; }
+.discord-import { display: flex; flex-direction: column; gap: 14px; width: 560px; max-width: 100%; }
+.discord-import-steps { display: flex; gap: 6px; }
+.discord-import-title { margin: 4px 0 0; font-size: 22px; font-weight: 800; letter-spacing: -0.01em; }
+.discord-import-steps > span { width: 8px; height: 8px; border-radius: 999px; background: var(--gryt-neutral-6); }
+.discord-import-steps > span[data-on] { background: var(--gryt-accent-9); }
+.discord-import-steps > span[data-current] { width: 22px; }
+.discord-import-hint { margin: 0; font-size: 13px; color: var(--gryt-neutral-11); line-height: 1.45; }
+.discord-import-hint[data-error] { color: var(--gryt-danger-11); }
+img.discord-import-letter { object-fit: cover; }
+.discord-import-text { margin: 0; font-size: 14px; color: var(--gryt-neutral-12); line-height: 1.45; }
+.discord-import-steps-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 12px; font-size: 14px; line-height: 1.5; color: var(--gryt-neutral-12); }
+.discord-import-steps-list > li { display: flex; align-items: flex-start; gap: 12px; }
+.discord-import-steps-list b { color: var(--gryt-neutral-12); }
+.discord-import-num { width: 24px; height: 24px; flex-shrink: 0; border-radius: 999px; display: flex; align-items: center; justify-content: center; background: var(--gryt-accent-3); color: var(--gryt-accent-11); font-size: 13px; font-weight: 800; }
+.discord-import-drop { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; height: 120px; border-radius: 16px; border: 1.5px dashed var(--gryt-neutral-7); background: transparent; color: var(--gryt-neutral-11); font: inherit; font-size: 14px; cursor: pointer; }
+.discord-import-drop[data-dragging], .discord-import-drop:hover { border-color: var(--gryt-accent-9); color: var(--gryt-neutral-12); }
+.discord-import-dms { display: flex; flex-direction: column; gap: 6px; max-height: 280px; overflow-y: auto; }
+.discord-import-dm { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 0 14px; border-radius: 14px; border: 0; background: var(--gryt-neutral-3); color: var(--gryt-neutral-12); font: inherit; text-align: left; cursor: pointer; }
+.discord-import-dm[aria-checked="true"] { background: var(--gryt-accent-3); box-shadow: inset 0 0 0 1.5px var(--gryt-accent-9); }
+.discord-import-letter { width: 32px; height: 32px; flex-shrink: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--gryt-neutral-5); font-size: 14px; font-weight: 800; color: var(--gryt-neutral-11); }
+.discord-import-facts { margin: 0; display: grid; grid-template-columns: 1fr auto; font-size: 14px; }
+.discord-import-facts > dt, .discord-import-facts > dd { margin: 0; padding: 9px 0; border-top: 1px solid var(--gryt-neutral-6); }
+.discord-import-facts > dt { color: var(--gryt-neutral-11); }
+.discord-import-facts > dd { font-weight: 700; text-align: right; }
+.discord-import-facts > dd[data-error] { color: var(--gryt-danger-11); }
+.discord-import-note { display: flex; align-items: flex-start; gap: 12px; margin: 0; padding: 12px 14px; border-radius: 14px; background: var(--gryt-neutral-3); font-size: 13px; line-height: 1.45; color: var(--gryt-neutral-12); }
+.discord-import-tag { font-size: 10px; font-weight: 700; padding: 0 6px; border-radius: 999px; border: 1px solid var(--gryt-neutral-7); color: var(--gryt-neutral-10); white-space: nowrap; user-select: none; cursor: default; }
+.discord-import-card { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border-radius: 16px; background: var(--gryt-accent-3); }
+.discord-import-card[data-tone="warning"] { background: var(--gryt-warning-3); box-shadow: inset 0 0 0 1px var(--gryt-warning-7); }
+.discord-import-bar { height: 6px; border-radius: 999px; background: var(--gryt-neutral-5); overflow: hidden; }
+.discord-import-bar > span { display: block; height: 100%; background: var(--gryt-accent-9); }
+.discord-import-bar[data-active] > span { position: relative; overflow: hidden; }
+.discord-import-bar[data-active] > span::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, color-mix(in oklab, white 45%, transparent), transparent); animation: discord-import-shine 1.6s ease-in-out infinite; }
+@keyframes discord-import-shine { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { .discord-import-bar[data-active] > span::after { animation: none; display: none; } }
 .poll-dialog { display: flex; flex-direction: column; gap: 14px; width: 440px; max-width: 100%; }
 .poll-dialog-icon { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--gryt-accent-9); color: var(--gryt-accent-contrast, #14161d); }
 .poll-dialog-field { display: flex; flex-direction: column; gap: 6px; }
@@ -2475,10 +2603,9 @@ body {
 }
 
 /* The rail's call capsule (GRYT-1746). Every colour is the theme's own green, so
-   a theme moves it; the live icon and the ring flip in light mode to keep 3:1+. */
+   a theme moves it; the ring flips in light mode to keep 3:1+. */
 .gryt-call-capsule {
   --gryt-call-ring: var(--gryt-success-9);
-  --gryt-call-on-live: var(--gryt-neutral-1);
   background: var(--gryt-success-3);
   box-shadow: inset 0 0 0 1px var(--gryt-success-6);
   border-radius: 9999px;
@@ -2486,7 +2613,6 @@ body {
 }
 .gryt-call-capsule[data-appearance="light"] {
   --gryt-call-ring: var(--gryt-success-11);
-  --gryt-call-on-live: var(--gryt-neutral-12);
 }
 /* Not up yet: amber, so the controls being there isn't read as the call being there. */
 .gryt-call-capsule[data-live="false"] {
@@ -2500,7 +2626,66 @@ body {
 .gryt-call-capsule [data-call-state="idle"]:hover {
   background: var(--gryt-success-4);
 }
+/* Camera and share sit on a neutral circle until they're live, then one green, as on the Rail board. */
+.gryt-call-capsule [data-call-state="idle"][data-media] {
+  background: var(--gryt-neutral-5);
+  color: var(--gryt-neutral-12);
+}
+.gryt-call-capsule [data-call-state="idle"][data-media]:hover {
+  background: var(--gryt-neutral-6);
+}
 .gryt-call-capsule [data-call-state="live"] {
-  background: var(--gryt-success-9);
-  color: var(--gryt-call-on-live);
+  background: var(--gryt-success-6);
+  color: var(--gryt-success-11);
+}
+/* The pop-out's hover bar is neutral, as on the Popout board: it floats over the tiles, not in the rail. */
+.gryt-call-capsule[data-direction="popout"] {
+  background: color-mix(in oklch, var(--gryt-neutral-1) 88%, transparent);
+  box-shadow: inset 0 0 0 1px var(--gryt-neutral-6);
+  padding: 6px;
+}
+.gryt-call-capsule[data-direction="popout"] [data-call-state="idle"] {
+  background: var(--gryt-neutral-5);
+  color: var(--gryt-neutral-12);
+}
+
+/* The narrow channel list (GRYT-1899): square icons, names on hover, people as dots. */
+[data-channel-icons] .gryt-hide-in-icons {
+  display: none !important;
+}
+[data-channel-icons] [data-gryt="channel-row"] {
+  width: 40px !important;
+  height: 40px;
+  padding: 0;
+  margin: 0 auto;
+  justify-content: center !important;
+  border-radius: 12px;
+}
+[data-channel-icons] .gryt-channel-unread {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+}
+[data-channel-icons] .gryt-member-row {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+[data-channel-icons] .gryt-member-row > div {
+  flex: none !important;
+}
+
+/* A toast's own icon sits in the bar as a flex child, and long text squeezed it to 0px wide. */
+.gryt-toast > svg {
+  flex-shrink: 0;
+}
+
+.gryt-thread-panel {
+  transition: width 0.36s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gryt-thread-panel {
+    transition: none;
+  }
 }

@@ -1,7 +1,13 @@
-import { Avatar, Skeleton, Tooltip } from "@gryt/ui";
+import { Avatar, PreviewCard, Skeleton, Tooltip } from "@gryt/ui";
+import { useSFU } from "@gryt/voice";
 import { motion } from "motion/react";
+import { type CSSProperties, type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+
+import { useSettings } from "@/settings";
 
 import { PiCameraFill,PiMicrophoneSlashFill, PiMonitorArrowUpFill, PiSpeakerSlashFill } from "../../../../lib/icons";
+import { useDrawnVideoSize } from "../hooks/useDrawnVideoSize";
 import { SpeakingHalo } from "./SpeakingHalo";
 import {
   speakingRingStyle,
@@ -32,6 +38,7 @@ export function ConnectedUser({
   isSelf,
   isConnectingToVoice = false,
   screenShareEnabled,
+  screenShareCount = 1,
   cameraEnabled,
   canDisconnect,
   onDisconnectFromVoice,
@@ -46,6 +53,8 @@ export function ConnectedUser({
   onToggleRole,
   targetRoles,
   serverHost,
+  liveCamera,
+  peek,
 }: {
   isSpeaking: boolean;
   /** Dominant colour of the avatar, so the ring matches the voice tile's. */
@@ -64,6 +73,8 @@ export function ConnectedUser({
   isConnectedToVoice?: boolean;
   isConnectingToVoice?: boolean;
   screenShareEnabled?: boolean;
+  /** How many windows they share; above one it shows next to the icon. */
+  screenShareCount?: number;
   cameraEnabled?: boolean;
   canDisconnect?: boolean;
   onDisconnectFromVoice?: () => void;
@@ -78,8 +89,19 @@ export function ConnectedUser({
   onToggleRole?: (role: Role, hold: boolean) => void;
   targetRoles?: Role[];
   serverHost?: string;
+  /** Their camera, drawn in place of the dot while the voice view is hidden (GRYT-1893). */
+  liveCamera?: MediaStream | null;
+  /** Their newest call message, peeking out of the row while the call is hidden (GRYT-1911). */
+  peek?: string;
 }) {
   const hue = tileHue(nickname, avatarColor, { nickname, worn: avatarWorn });
+  const rowRef = useRef<HTMLDivElement>(null);
+  // Own-transport voice has no analyser; the transport reports its level, as on the tile (GRYT-1830).
+  const { getTransportLevels } = useSFU();
+  const transportDb = useCallback(
+    () => (serverUserId ? (getTransportLevels?.()?.users.get(serverUserId) ?? -Infinity) : -Infinity),
+    [getTransportLevels, serverUserId],
+  );
 
   return (
     <UserContextMenu
@@ -108,7 +130,7 @@ export function ConnectedUser({
       transition={{ duration: 0.25 }}
       style={{ width: "100%", overflow: "hidden" }}
     >
-      <div className="flex gap-2 items-center px-3 py-2 w-full" style={{
+      <div ref={rowRef} className="gryt-member-row flex gap-2 items-center px-3 py-2 w-full" style={{
           opacity: 1,
           transition: "opacity 0.3s ease",
         }}>
@@ -116,10 +138,11 @@ export function ConnectedUser({
           <div className="flex items-center justify-center relative" style={{ flexShrink: 0 }}>
             <SpeakingHalo
               analyser={speakingAnalyser}
+              getDb={isSelf ? undefined : transportDb}
               hue={hue}
               size={SIDEBAR_AVATAR_PX}
             />
-            <Avatar
+            {liveCamera ? <LiveDot stream={liveCamera} nickname={nickname} row={rowRef} /> : <Avatar
               size="small"
               className="h-6 w-6 text-[10px]"
               fallback={nickname[0]}
@@ -130,19 +153,20 @@ export function ConnectedUser({
                 // speakingRingStyle is the point: the two used to disagree.
                 ...speakingRingStyle(hue, isSpeaking, SIDEBAR_RING),
               }}
-            />
+            />}
           </div>
-          <span className="text-sm truncate" style={{ whiteSpace: "nowrap" }}>{nickname}</span>
+          <span className="gryt-hide-in-icons text-sm truncate" style={{ whiteSpace: "nowrap" }}>{nickname}</span>
         </div>
 
-        <div className="flex gap-1 items-center" style={{ flexShrink: 0 }}>
+        <div className="gryt-hide-in-icons flex gap-1 items-center" style={{ flexShrink: 0 }}>
           {isConnectingToVoice && (
             <Skeleton variant="circular" width="12px" height="12px" />
           )}
           {screenShareEnabled && (
-            <Tooltip title="Streaming">
-              <div className="flex items-center">
-                <PiMonitorArrowUpFill size={14} color="var(--gryt-accent-9)" />
+            <Tooltip title={screenShareCount > 1 ? `Sharing ${screenShareCount} windows` : "Streaming"}>
+              <div className="flex items-center gap-0.5 text-xs font-bold" style={{ color: "var(--gryt-accent-9)" }}>
+                <PiMonitorArrowUpFill size={14} />
+                {screenShareCount > 1 && screenShareCount}
               </div>
             </Tooltip>
           )}
@@ -153,11 +177,8 @@ export function ConnectedUser({
               </div>
             </Tooltip>
           )}
-          {isDeafened ? (
-            <PiSpeakerSlashFill size={14} color="var(--gryt-danger-8)" />
-          ) : isMuted ? (
-            <PiMicrophoneSlashFill size={14} color="var(--gryt-danger-8)" />
-          ) : null}
+          {isDeafened && <PiSpeakerSlashFill size={14} color="var(--gryt-danger-8)" />}
+          {!isDeafened && isMuted && <PiMicrophoneSlashFill size={14} color="var(--gryt-danger-8)" />}
           {isAFK && (
             <span className="text-xs font-bold text-gryt-warning">
               AFK
@@ -165,7 +186,88 @@ export function ConnectedUser({
           )}
         </div>
       </div>
+      {peek && <RowPeek text={peek} row={rowRef} />}
     </motion.div>
     </UserContextMenu>
   );
+}
+
+/** Fixed and portalled: the card and the list both clip, and the board has it reach past them. */
+function RowPeek({ text, row }: { text: string; row: RefObject<HTMLDivElement | null> }) {
+  const [at, setAt] = useState<{ left: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const r = row.current?.getBoundingClientRect();
+    if (r) setAt({ left: r.left + Math.min(96, r.width - 8), top: r.top + 2 });
+  }, [row, text]);
+  if (!at) return null;
+  return createPortal(
+    <motion.div
+      key={text}
+      initial={{ opacity: 0, x: -6 }}
+      animate={{ opacity: 1, x: 0 }}
+      className="pointer-events-none fixed max-w-[260px] truncate px-2.5 py-[5px] text-xs font-semibold"
+      style={{ ...at, zIndex: 40, background: "#f4f3ff", color: "#16151f", borderRadius: "12px 12px 12px 4px", boxShadow: "0 8px 20px rgba(0,0,0,.45)" }}
+    >
+      {text}
+    </motion.div>,
+    document.body,
+  );
+}
+
+/** 28px of their camera. Its drawn size is reported, so the sender only needs its lowest layer. */
+function LiveDot({ stream, nickname, row }: { stream: MediaStream; nickname: string; row: RefObject<HTMLDivElement | null> }) {
+  const { setShowVoiceView } = useSettings();
+  return (
+    <PreviewCard.Root>
+      <PreviewCard.Trigger
+        render={
+          <button
+            type="button"
+            aria-label={`${nickname}'s camera`}
+            className="cursor-pointer rounded-full border-0 bg-transparent p-0"
+            onClick={() => setShowVoiceView(true)}
+          />
+        }
+      >
+        <CameraVideo
+          stream={stream}
+          className="h-7 w-7 shrink-0 rounded-full object-cover"
+          style={{ boxShadow: "0 0 0 2px var(--gryt-success-11)", background: "var(--gryt-accent-4)" }}
+        />
+      </PreviewCard.Trigger>
+      <PreviewCard.Portal>
+        {/* Against the whole row, so the peek sits beside the channel list as on the board, not over it. */}
+        <PreviewCard.Positioner anchor={row} side="right" align="center" sideOffset={16}>
+          <PreviewCard.Popup
+            className="flex flex-col gap-2"
+            style={{ width: 208, padding: 8, borderRadius: 16, background: "var(--gryt-neutral-2)", border: "1px solid var(--gryt-neutral-6)" }}
+          >
+            <div className="relative overflow-hidden rounded-xl" style={{ height: 108, background: "var(--gryt-accent-4)" }}>
+              <CameraVideo stream={stream} className="h-full w-full object-cover" />
+              <span className="absolute bottom-1.5 left-2 rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: "rgba(17,19,24,.8)" }}>
+                {nickname}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="h-8 cursor-pointer rounded-full border-0 bg-gryt-neutral-5 text-[13px] font-bold text-gryt-neutral-12 hover:bg-gryt-neutral-6"
+              onClick={() => setShowVoiceView(true)}
+            >
+              Open the call
+            </button>
+          </PreviewCard.Popup>
+        </PreviewCard.Positioner>
+      </PreviewCard.Portal>
+    </PreviewCard.Root>
+  );
+}
+
+/** A camera stream at whatever size it's drawn, reported so the sender sends no more than that. */
+function CameraVideo({ stream, className, style }: { stream: MediaStream; className: string; style?: CSSProperties }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useDrawnVideoSize(ref, stream, "cover");
+  useEffect(() => {
+    if (ref.current) ref.current.srcObject = stream;
+  }, [stream]);
+  return <video ref={ref} autoPlay playsInline muted className={className} style={style} />;
 }

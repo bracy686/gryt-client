@@ -1,11 +1,13 @@
+import { IS_BETA_BUILD } from "@/common";
+
 import type { RichActivity } from "../../../../lib/richActivity";
 import { AUDIO_DEFAULTS } from "./useAudioSettings";
 
 /**
- * How the voice grid chooses its rows and columns. "meet" reproduces Google Meet
- * as measured; "large" picks the biggest tiles. Both look right, so it is a setting.
+ * How the voice grid places tiles. "bento" fills the view, shares and cameras first;
+ * "meet" reproduces Google Meet as measured; "large" picks the biggest equal tiles.
  */
-export type VoiceTileLayout = "meet" | "large";
+export type VoiceTileLayout = "bento" | "meet" | "large";
 
 /**
  * What two people in a channel look like. "hero" fills the panel with one camera;
@@ -46,6 +48,8 @@ export interface Settings {
   setCompressorEnabled: (value: boolean) => void;
   compressorAmount: number;
   setCompressorAmount: (value: number) => void;
+  voiceBitrateKbps: number;
+  setVoiceBitrateKbps: (value: number) => void;
 
   connectSoundEnabled: boolean;
   setConnectSoundEnabled: (value: boolean) => void;
@@ -183,6 +187,12 @@ export interface Settings {
   setMessageSoundVolume: (value: number) => void;
   customMessageSoundFile: string | null;
   setCustomMessageSoundFile: (value: string | null) => void;
+  ringtoneEnabled: boolean;
+  setRingtoneEnabled: (value: boolean) => void;
+  ringtoneVolume: number;
+  setRingtoneVolume: (value: number) => void;
+  customRingtoneFile: string | null;
+  setCustomRingtoneFile: (value: string | null) => void;
 
   chatMediaVolume: number;
   setChatMediaVolume: (value: number) => void;
@@ -203,6 +213,9 @@ export interface Settings {
   setCameraMirrored: (mirrored: boolean) => void;
   faceFramingEnabled: boolean;
   setFaceFramingEnabled: (enabled: boolean) => void;
+  /** Pressing the camera button opens the preview first; off, it turns straight on. */
+  cameraPreviewFirst: boolean;
+  setCameraPreviewFirst: (enabled: boolean) => void;
   voiceTileLayout: VoiceTileLayout;
   setVoiceTileLayout: (layout: VoiceTileLayout) => void;
   voiceTwoPersonLayout: VoiceTwoPersonLayout;
@@ -282,6 +295,8 @@ export const settingsInit: Settings = {
   setCompressorEnabled: noop,
   compressorAmount: AUDIO_DEFAULTS.compressorAmount,
   setCompressorAmount: noop,
+  voiceBitrateKbps: AUDIO_DEFAULTS.voiceBitrateKbps,
+  setVoiceBitrateKbps: noop,
   isMuted: false,
   setIsMuted: noop,
   isDeafened: false,
@@ -384,6 +399,12 @@ export const settingsInit: Settings = {
   setMessageSoundVolume: noop,
   customMessageSoundFile: AUDIO_DEFAULTS.customMessageSoundFile,
   setCustomMessageSoundFile: noop,
+  ringtoneEnabled: AUDIO_DEFAULTS.ringtoneEnabled,
+  setRingtoneEnabled: noop,
+  ringtoneVolume: AUDIO_DEFAULTS.ringtoneVolume,
+  setRingtoneVolume: noop,
+  customRingtoneFile: AUDIO_DEFAULTS.customRingtoneFile,
+  setCustomRingtoneFile: noop,
 
   chatMediaVolume: 50,
   setChatMediaVolume: noop,
@@ -402,9 +423,11 @@ export const settingsInit: Settings = {
   setCameraQuality: noop,
   cameraMirrored: true,
   setCameraMirrored: noop,
-  faceFramingEnabled: false,
+  faceFramingEnabled: true,
   setFaceFramingEnabled: noop,
-  voiceTileLayout: "meet",
+  cameraPreviewFirst: true,
+  setCameraPreviewFirst: noop,
+  voiceTileLayout: "bento",
   setVoiceTileLayout: noop,
   voiceTwoPersonLayout: "hero",
   setVoiceTwoPersonLayout: noop,
@@ -433,7 +456,7 @@ export const settingsInit: Settings = {
   setScreenShareQuality: noop,
   screenShareFps: 30,
   setScreenShareFps: noop,
-  experimentalScreenShare: false,
+  experimentalScreenShare: IS_BETA_BUILD,
   setExperimentalScreenShare: noop,
 
   screenShareGamingMode: true,
