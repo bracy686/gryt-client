@@ -33,8 +33,11 @@ export function archivedRow(m: ArchivedMessage, nameFor: (id: string) => string 
     ...(m.sharedBy && m.sharedBy !== m.senderId ? { shared_by: nameFor(m.sharedBy) ?? "them" } : {}),
     ...(m.receivedAt ? { received_at: new Date(m.receivedAt).toISOString() } : {}),
     ...(m.importedFrom ? { imported_from: m.importedFrom } : {}),
+    ...(m.outbox ? { nonce: m.messageId, pending: true, waiting: true, waitingNote: WAITING_NOTE } : {}),
   };
 }
+
+export const WAITING_NOTE = "Sends by itself once this device is added to the chat";
 
 /** What goes with a report of an MLS message: this device's copy, which the server can't check (GRYT-1557). */
 export function mlsReportCopy(message: Pick<ChatMessage, "sender_server_id" | "text">): { senderServerUserId: string; text: string } {
@@ -94,7 +97,9 @@ export function mergeTimeline({
   archived: ChatMessage[];
   archiveHasMore: boolean;
 }): ChatMessage[] {
-  const shown = server.filter((m) => !isMlsPlaceholder(m));
+  // A shared copy of a sealed message wins: the server's row may be one this device can't open.
+  const copied = new Set(archived.map((m) => m.message_id));
+  const shown = server.filter((m) => !isMlsPlaceholder(m) && !(m.sealed && copied.has(m.message_id)));
   const settled = (list: ChatMessage[]) => list.filter((m) => !m.pending && !m.failed);
   const floorOf = (list: ChatMessage[], more: boolean) =>
     more && settled(list).length ? Math.min(...settled(list).map(at)) : -Infinity;
@@ -151,8 +156,7 @@ export function mlsNotice(
     peerName,
     signedIn = false,
     peerKeyChanged = false,
-    peerKeyResetAt = null,
-  }: { lostHistory: boolean; home: "browser" | "app"; peerName: string; signedIn?: boolean; peerKeyChanged?: boolean; peerKeyResetAt?: number | null },
+  }: { lostHistory: boolean; home: "browser" | "app"; peerName: string; signedIn?: boolean; peerKeyChanged?: boolean },
 ): string | null {
   const here = home === "browser" ? "this browser" : "this device";
   const Here = home === "browser" ? "This browser" : "This device";
@@ -164,42 +168,55 @@ export function mlsNotice(
     if (mode.reason === "peer_left_mls") return `Can't send. ${peerName}'s app stopped using end-to-end encryption here.`;
     if (mode.reason === "server_dropped_mls") return "Can't send. This server stopped supporting end-to-end encryption.";
   }
-  if (peerKeyResetAt && peerKeyResetAt > Date.now()) {
-    const on = new Date(peerKeyResetAt).toLocaleDateString(undefined, { day: "numeric", month: "short" });
-    return `${peerName}'s key is being reset, and a new one takes over on ${on}. If you didn't expect this, check with ${peerName} another way.`;
-  }
   if (mode?.kind === "mls" && peerKeyChanged) {
-    return `${peerName} has a new key, usually from a new phone or computer. Before you reply, compare the pictures on their card with them somewhere this server can't change: in person, on a call, or in a chat on another server.`;
+    return `${peerName} has a new key, usually from a new phone or computer. Before you reply, compare codes with them on a call or in person.`;
   }
   if (problems.lost === "too_many_devices") {
-    return `${Here} can't use encrypted DMs here because your account has the most devices allowed. Remove an old one in Settings, under Devices.`;
+    return `${Here} can't use encrypted DMs here because your account has the most devices allowed. Remove the ones you no longer use.`;
   }
   if (problems.lost === "other_identity") {
-    return `${Here} has its own encryption key on this server, not your account's. Link it from one of your devices that has your account's key, or make this device's key your account's.`;
+    return `${Here} has a different key on this server than your account. Use your account's key here and approve it on one of your other devices, or link this device from one of them.`;
   }
   if (problems.lost === "not_added") {
     return `${Here} is new to your chat with ${peerName}. ${peerName}'s app or another of your devices adds it by itself the next time one of them is open. Until then, what you write here waits and goes out on its own.`;
   }
-  if (problems.lost === "removed") return `${Here} was taken out of this conversation, so new messages won't show here.`;
-  if (problems.lost) return `${Here} lost track of this conversation's encryption, so new messages won't show here.`;
+  if (problems.lost === "removed") return `${Here} was taken out of your chat with ${peerName}. Ask to be added again, and ${peerName}'s app or another of your devices adds it back.`;
+  if (problems.lost) return `${Here} lost track of this conversation's encryption, so new messages won't show here until it rejoins.`;
   // After the reasons above: each of those says what to do, and this line doesn't.
   if (mode?.kind === "refused") return `Can't send yet. ${Here} isn't set up for end-to-end encryption here.`;
   if (problems.undecryptable > 0) {
     const n = problems.undecryptable;
-    return `${n} ${n === 1 ? "message" : "messages"} couldn't be decrypted on ${here}.`;
+    return `${n} ${n === 1 ? "message" : "messages"} couldn't be opened on ${here}. ${peerName} has ${n === 1 ? "it" : "them"} and can send you a copy.`;
   }
-  if (lostHistory) return `Older messages were cleared from ${here}.`;
+  if (lostHistory) return `Older messages were cleared from ${here}. ${peerName} can send you a copy.`;
   if (mode?.kind === "mls" && home === "browser") return "Messages here are only kept in this browser. Clearing its site data deletes them.";
   return null;
 }
 
+const TRY_AGAIN = "It's back in the message box. Press Send to try again.";
+const FAILURE_REASONS: Record<string, string> = {
+  offline: "The server didn't answer in time.",
+  stopped: "The connection to the server closed.",
+  refused: "The server turned it down.",
+  commit_retries: "Other devices kept changing this chat at the same time.",
+  not_in_group: "This device hasn't been added to this chat yet.",
+  no_device: "Encrypted messages haven't started on this device yet.",
+  too_many_attachments: "That's more files than one message can carry.",
+};
+
 /** What a failed MLS send says on its row. */
 export function sendFailure(e: unknown, home: "browser" | "app"): string {
   const code = (e as { code?: string })?.code;
-  if (code === "peer_unverified") return "Not sent. Their key couldn't be checked. Look at their card to see why.";
+  if (code === "unexpected_member") {
+    const here = home === "browser" ? "this browser" : "this device";
+    const restart = home === "browser" ? "reload the page" : "restart Gryt";
+    return `Not sent. Someone in this chat has a key ${here} doesn't know, so Gryt won't send it to them. If you just linked ${here}, ${restart}. ${TRY_AGAIN}`;
+  }
+  if (code === "device_removed") return "Not sent. This device was removed from encrypted messages on this server.";
+  if (code === "peer_unverified") return "Not sent. Their key isn't trusted on this device yet. Compare codes with them, then send it again.";
   if (code === "other_identity") return `Not sent. ${home === "browser" ? "This browser" : "This device"} needs to be linked to your account's key first.`;
   if (code === "waiting_for_welcome") {
-    return `Not sent. ${home === "browser" ? "This browser" : "This device"} still isn't in this chat. Send it again once the other person or another of your devices has been online.`;
+    return `Not sent. ${home === "browser" ? "This browser" : "This device"} still isn't in this chat after half an hour. It's back in the message box to send once the other person or another of your devices has been online.`;
   }
-  return "Not sent.";
+  return `Not sent. ${(code && FAILURE_REASONS[code]) ?? "Something went wrong while encrypting it."} ${TRY_AGAIN}`;
 }

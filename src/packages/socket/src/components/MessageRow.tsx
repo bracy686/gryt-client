@@ -1,10 +1,11 @@
-import { Avatar, Popover, Tooltip } from "@gryt/ui";
+import { AddReactionButton, Avatar, MessageHoverToolbar, Popover, ReactionPill, Tooltip } from "@gryt/ui";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { type CSSProperties, forwardRef, memo, type ReactNode, useCallback, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import { type MessageStyle, useTheme } from "@/common";
 
 import { PiChatsTeardropFill, PiDoorOpenBold,PiPushPinFill, PiSignInBold } from "../../../../lib/icons";
+import { useCustomEmojiMap } from "../hooks/useCustomEmojiMap";
 import { useServerPermissions } from "../hooks/usePermissions";
 import type { ThreadSummary } from "../hooks/useThreads";
 import { TINY_MAX_WIDTH } from "../lib/narrowLayout";
@@ -15,13 +16,12 @@ import { drawsMessageText, isUnknownKind, unknownKindNotice } from "../utils/web
 import { AttachmentGrid } from "./AttachmentGrid";
 import { isFileCard, isGridImage } from "./attachmentKinds";
 import { BotTag } from "./BotTag";
-import { MessageHoverToolbar } from "./ChatMessage";
 import type { ChatMessage, Reaction } from "./chatUtils";
 import { DateSeparator, MessageTimestamp, NewMessagesDivider, toDate } from "./chatUtils";
 import { ADDED_LINE } from "./chatViewHelpers";
 import { CollapsibleText } from "./CollapsibleText";
+import { DiscordOnlyBadge } from "./DiscordOnlyBadge";
 import { EmojiPicker } from "./EmojiPicker";
-import { EmojiText } from "./EmojiText";
 import { type LightboxGallery } from "./ImageLightbox";
 import { galleryOf } from "./lightboxGallery";
 import { MessageEmbeds } from "./LinkEmbed";
@@ -202,6 +202,8 @@ export const MessageRow = memo(forwardRef<HTMLDivElement, MessageRowProps>(({
   }, [m, serverHost, onLightboxOpen, meta.senderName]);
   const isOwnMessage = !!currentUserId && m.sender_server_id === currentUserId;
   const { messageStyle: look, ownMessageSide } = useTheme();
+  // A custom emoji used here before and since deleted would show as its name, so the quick row skips it.
+  const customEmojiMap = useCustomEmojiMap();
   const alignRight = isOwnMessage && ownMessageSide === "right" && !meta.isSystem;
 
   // Editing and deleting your own message each have a permission, so a role can
@@ -290,7 +292,7 @@ export const MessageRow = memo(forwardRef<HTMLDivElement, MessageRowProps>(({
    * Read on hover rather than held in state, so it is current without being told.
    */
   const quickReactions = showToolbar && canReact
-    ? getFrequentReactions(4, serverHost)
+    ? getFrequentReactions(4, serverHost, (src) => !/^:.+:$/.test(src) || customEmojiMap.has(src.slice(1, -1)))
     : undefined;
 
   const highlighted = isHovered || isReactionPickerOpen || isCtxMenuOpen;
@@ -298,6 +300,15 @@ export const MessageRow = memo(forwardRef<HTMLDivElement, MessageRowProps>(({
   // Bubbles hug their text, so the column lines them up on the side they belong to.
   const bubbleSide = alignRight ? "flex-end" : "flex-start";
   const bubbleAlign = look === "bubbles" ? bubbleSide : undefined;
+
+  const bareAvatar = <Avatar size="large" className="h-[51px] w-[51px] shrink-0 text-lg" fallback={meta.senderName[0]} src={meta.avatarUrl} />;
+  const plainAvatar = m.sender_imported_from ? (
+    <span className="mt-0.5 shrink-0">
+      <DiscordOnlyBadge name={meta.senderName} avatar={meta.avatarUrl} size={18}>{bareAvatar}</DiscordOnlyBadge>
+    </span>
+  ) : (
+    <span className="mt-0.5 shrink-0">{bareAvatar}</span>
+  );
 
   const avatarNode = (
     <>
@@ -327,14 +338,7 @@ export const MessageRow = memo(forwardRef<HTMLDivElement, MessageRowProps>(({
                   </Popover.Portal>
                 )}
               </Popover.Root>
-            ) : (
-              <Avatar
-                size="large"
-                className="mt-0.5 h-[51px] w-[51px] shrink-0 text-lg"
-                fallback={meta.senderName[0]}
-                src={meta.avatarUrl}
-              />
-            )}
+            ) : plainAvatar}
     </>
   );
 
@@ -725,6 +729,8 @@ function MessageContent({
   // For tests and tools: a row the server has not confirmed says why.
   const sendState = sendStateOf(m);
   const bubble = look === "bubbles";
+  const bubbleFrom = own ? "user" : "assistant";
+  const customEmojis = useCustomEmojiMap();
   const barRef = useRef<HTMLDivElement>(null);
   const [barStyle, setBarStyle] = useState<CSSProperties>({});
   useLayoutEffect(() => {
@@ -732,14 +738,11 @@ function MessageContent({
     const width = barRef.current?.offsetWidth || 200;
     setBarStyle(hoverBarPlacement(alignRight, rowRef.current, width));
   }, [showToolbar, alignRight, rowRef]);
-  const ownBubble = highlighted ? "var(--gryt-accent-5)" : "var(--gryt-accent-4)";
-  const otherBubble = highlighted ? "var(--gryt-neutral-5)" : "var(--gryt-neutral-4)";
-  const bubbleBackground = own ? ownBubble : otherBubble;
   return (
     <motion.div
       // Reactions already there on open are just there: growing in pushed the chat off the bottom.
       initial={false}
-      animate={{ marginBottom: hasReactions ? 30 : 0 }}
+      animate={{ marginBottom: hasReactions ? 34 : 0 }}
       transition={{ type: "spring", stiffness: 500, damping: 30 }}
       style={{
         margin: bubble ? "0 -6px" : "0 -8px",
@@ -747,22 +750,21 @@ function MessageContent({
       }}
     >
     {/* Hover is on the highlighted part only, so the bar doesn't open from the empty space beside a message. */}
-    <div className="flex flex-col" ref={rowRef} data-message-id={m.message_id} data-send-state={sendState}
+    <div className={`group/row flex flex-col${bubble ? " gryt-message-bubble" : ""}`} ref={rowRef} data-message-id={m.message_id} data-send-state={sendState}
+      // The bubbles look is @gryt/ui's bubble: its padding, corner, width and both backgrounds.
+      data-from={bubble ? bubbleFrom : undefined} data-highlighted={bubble && highlighted ? "" : undefined}
       onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave} style={{
-        // Even padding, and a radius of a picture's plus that padding, so the edge round one reads as one stroke.
-        padding: bubble ? 10 : 8,
         cursor: "default",
-        position: "relative",
         textAlign: alignRight && !bubble ? "right" : undefined,
-        width: "fit-content",
-        transition: "background 0.15s",
         /* The highlight hugs the text, and so does the hover. */
         ...(bubble ? {
-          maxWidth: "min(680px, 85%)",
           margin: "0 6px",
-          borderRadius: "calc(var(--gryt-radius-md) + 10px)",
-          background: bubbleBackground,
         } : {
+          // Even padding, and a radius of a picture's plus that padding, so the edge round one reads as one stroke.
+          padding: 8,
+          position: "relative",
+          width: "fit-content",
+          transition: "background 0.15s",
           maxWidth: "100%",
           // The extra 2px of padding above and below doesn't spread the chat out.
           margin: "-2px 0",
@@ -786,6 +788,7 @@ function MessageContent({
               onThread={onThread}
               threadLabel={threadLabel}
               onMore={onMore}
+              customEmojis={customEmojis}
             />
           </HoverBar>
         )}
@@ -861,7 +864,7 @@ function MessageContent({
           </Tooltip>
         )}
         {serverHost && !m.pending && showsPreviews && drawsText && (
-          <MessageEmbeds messageId={m.message_id} text={m.text} serverHost={serverHost} />
+          <MessageEmbeds messageId={m.message_id} text={m.text} serverHost={serverHost} own={!!currentUserId && m.sender_server_id === currentUserId} />
         )}
         {m.attachments && m.attachments.length > 0 && serverHost && (() => {
           /* Two or more pictures go in a grid, and plain files two to a row (GRYT-1722 draft).
@@ -992,6 +995,7 @@ function ReactionBadges({
   onOpenPicker: (anchorEl?: HTMLElement) => void;
   alignRight?: boolean;
 }) {
+  const customEmojis = useCustomEmojiMap();
   const hasReactions = reactions && reactions.length > 0;
   if (!hasReactions) return null;
 
@@ -1003,7 +1007,7 @@ function ReactionBadges({
       position: "absolute",
       bottom: 0,
       ...(alignRight ? { right: "6px" } : { left: "6px" }),
-      transform: "translateY(100%)",
+      transform: "translateY(calc(100% + 4px))",
       gap: "4px",
       zIndex: 1,
       width: "max-content",
@@ -1011,7 +1015,6 @@ function ReactionBadges({
       <AnimatePresence mode="popLayout" initial={false}>
         {reactions.map((reaction, rIdx) => {
           const isMine = !!(currentUserId && reaction.users.includes(currentUserId));
-          const emojiId = reaction.src;
           const usersLabel = reaction.users
             .map((uid) => {
               if (currentUserId && uid === currentUserId) return currentUserNickname || "You";
@@ -1028,71 +1031,24 @@ function ReactionBadges({
               exit={{ opacity: 0, scale: 0.6 }}
               transition={{ type: "spring", stiffness: 500, damping: 25 }}
             >
-              <Tooltip
-                title={(
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    {/* The emoji itself, never its :code: */}
-                    <div style={{ lineHeight: 1 }}><EmojiText text={emojiId} emojiSize={22} disableTooltip /></div>
-                    <div style={{ opacity: 0.9 }}>{usersLabel}</div>
-                  </div>
-                )}
-              >
-                <button
-                  onClick={onReaction ? () => onReaction(reaction.src) : undefined}
-                  aria-disabled={!onReaction || undefined}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "5px",
-                    padding: "3px 8px",
-                    minHeight: "28px",
-                    fontSize: "14px",
-                    lineHeight: 1,
-                    background: isMine ? "var(--gryt-accent-3)" : "var(--gryt-neutral-3)",
-                    border: `1px solid ${isMine ? "var(--gryt-accent-7)" : "var(--gryt-neutral-5)"}`,
-                    borderRadius: "var(--gryt-radius-md)",
-                    cursor: onReaction ? "pointer" : "default",
-                    transition: "background 0.15s, border-color 0.15s",
-                    whiteSpace: "nowrap",
-                    color: isMine ? "var(--gryt-accent-11)" : "var(--gryt-neutral-12)",
-                  }}
-                  onMouseEnter={onReaction ? (e) => { e.currentTarget.style.background = isMine ? "var(--gryt-accent-4)" : "var(--gryt-neutral-4)"; e.currentTarget.style.borderColor = isMine ? "var(--gryt-accent-8)" : "var(--gryt-neutral-6)"; } : undefined}
-                  onMouseLeave={onReaction ? (e) => { e.currentTarget.style.background = isMine ? "var(--gryt-accent-3)" : "var(--gryt-neutral-3)"; e.currentTarget.style.borderColor = isMine ? "var(--gryt-accent-7)" : "var(--gryt-neutral-5)"; } : undefined}
-                >
-                  {/* No tooltip of its own: the emoji's name-only one won over this pill's whenever you pointed at the emoji. */}
-                  <EmojiText text={reaction.src} emojiSize={18} disableTooltip />
-                  <span style={{ fontWeight: 500, fontSize: "13px" }}>{reaction.amount}</span>
-                </button>
-              </Tooltip>
+              <ReactionPill
+                emoji={reaction.src}
+                count={reaction.amount}
+                mine={isMine}
+                who={usersLabel}
+                onToggle={onReaction ? () => onReaction(reaction.src) : undefined}
+                customEmojis={customEmojis}
+              />
             </motion.div>
           );
         })}
       </AnimatePresence>
       {onReaction && (
-      <button
-        onClick={(e) => onOpenPicker(e.currentTarget)}
-        title="Add reaction"
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: "28px",
-          minHeight: "28px",
-          background: "var(--gryt-neutral-3)",
-          border: "1px solid var(--gryt-neutral-5)",
-          borderRadius: "var(--gryt-radius-md)",
-          cursor: "pointer",
-          transition: "background 0.15s, border-color 0.15s",
-          color: "var(--gryt-neutral-10)",
-          fontSize: "16px",
-          lineHeight: 1,
-          padding: 0,
-        }}
-        onMouseEnter={(e) => { e.currentTarget.style.background = "var(--gryt-neutral-4)"; e.currentTarget.style.borderColor = "var(--gryt-neutral-6)"; }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = "var(--gryt-neutral-3)"; e.currentTarget.style.borderColor = "var(--gryt-neutral-5)"; }}
-      >
-        +
-      </button>
+        <AddReactionButton
+          onClick={(e) => onOpenPicker(e.currentTarget)}
+          // With a pointer the hover bar has the picker too, so this shows with the message's hover.
+          className="transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 focus-visible:opacity-100"
+        />
       )}
     </div>
   );

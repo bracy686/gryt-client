@@ -1,4 +1,4 @@
-import { Button, CardIcon, Checkbox, CopyCardLink, createGrytTheme, Dialog, GrytProvider, grytTheme, grytThemeToOptions, MemberCardEditor, seedFromId, TextField, Toggle, ToggleGroup } from "@gryt/ui";
+import { Avatar, Button, CardIcon, Checkbox, CopyCardLink, createGrytTheme, Dialog, GrytProvider, grytTheme, grytThemeToOptions, MemberCardEditor, MemberItem, seedFromId, TextField, Toggle, ToggleGroup } from "@gryt/ui";
 import { UserCircle } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
@@ -21,6 +21,8 @@ import type { RichActivity } from "../../../../lib/richActivity";
 import { takeSharedLook, useSharedLook } from "../../../../lib/sharedLook";
 import { useCardEmojiGroups } from "../../../socket/src/components/memberCard/cardEmojiGroups";
 import { MemberCardView } from "../../../socket/src/components/memberCard/MemberCardView";
+import { useRowCard } from "../../../socket/src/components/memberCard/rowCard";
+import type { MemberInfo } from "../../../socket/src/components/MemberSidebar";
 import { type CardPreset, forgetCardPreset, saveCardPreset, useCardPresets } from "../../../socket/src/lib/memberCard/cardPresets";
 import {
   cardUpdatePayload,
@@ -37,9 +39,9 @@ import {
   PRONOUNS_MAX,
   STATUS_LINE_MAX,
 } from "../../../socket/src/lib/memberCard/cardStyle";
-import { isStillPicture } from "./bannerCrop";
-import { BannerCropDialog } from "./BannerCropDialog";
+import { BANNER_SHAPE, CARD_BANNER_SHAPE, isStillPicture } from "./bannerCrop";
 import { CardPresetTile } from "./CardPresetTile";
+import { PictureCropDialog } from "./PictureCropDialog";
 import { SettingGroup, SettingsContainer } from "./settingsComponents";
 
 /** A game for the preview when you are not playing one, so the band can be seen. */
@@ -128,6 +130,27 @@ export function CardSettings() {
   };
 
   const style = draft.cardStyle;
+  const bannerWhere = style.bannerSize === "card" ? "A picture behind your whole card" : "A picture across the top of your card";
+  /* A banner framed for the band is too short to fill the whole card, so switching offers to pick it again. */
+  const changeStyle = (next: typeof style) => {
+    commit({ ...draft, cardStyle: next });
+    if (next.bannerSize !== "card" || style.bannerSize === "card" || !bannerUrl) return;
+    toast((t) => (
+      <span>
+        Your banner was framed for the top of the card.{" "}
+        <button
+          type="button"
+          className="gryt-link cursor-pointer border-0 bg-transparent p-0"
+          onClick={() => {
+            toast.dismiss(t.id);
+            bannerInput.current?.click();
+          }}
+        >
+          Pick a picture for the whole card
+        </button>
+      </span>
+    ), { duration: 8000 });
+  };
   const presets = useCardPresets();
 
   /* A link from somebody, or from the card builder: shown in the editor, and only kept on Save. */
@@ -271,10 +294,41 @@ export function CardSettings() {
           </summary>
         </details>
       </MemberCardView>
+      <span className="mt-2 text-[11px] font-bold tracking-wider uppercase">In the member list</span>
+      <RowPreview nickname={nickname} cardStyle={draft.cardStyle} worn={worn} seedKey={seedKey} avatarSrc={resolveAvatarSrc(avatarDataUrl, nickname, worn)} host={connected[0] ?? ""} />
     </GrytProvider>
   );
 
   const refused = Object.entries(refusals);
+
+  /* Mounted once for every tab, so the Whole card prompt on the Colour tab can open it too. */
+  const bannerPicker = (
+    <>
+    <input
+      ref={bannerInput}
+      type="file"
+      accept={videoBannerHosts.length > 0 ? "image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm" : "image/png,image/jpeg,image/webp,image/gif"}
+      style={{ display: "none" }}
+      onChange={(e) => {
+        const file = e.target.files?.[0];
+        e.target.value = "";
+        if (!file) return;
+        void isStillPicture(file).then((still) => (still ? setCropping(file) : changeBanner(file)));
+      }}
+    />
+    <PictureCropDialog
+      file={cropping}
+      shape={style.bannerSize === "card" ? CARD_BANNER_SHAPE : BANNER_SHAPE}
+      preview={(src) => (
+        <MemberCardView name={nickname} avatarSrc={resolveAvatarSrc(avatarDataUrl, nickname, worn)} status="online" profile={draft} owlHex={owlHex} bannerUrl={src} bannerType="image" appearance={resolvedAppearance} seedKey={seedKey} worn={worn} />
+      )}
+      onDone={(cropped) => {
+        setCropping(null);
+        if (cropped) changeBanner(cropped);
+      }}
+    />
+    </>
+  );
 
   const about = (
     <>
@@ -295,8 +349,8 @@ export function CardSettings() {
           title="Banner"
           description={
             bannerHosts.length === connected.length
-              ? "A picture across the top of your card. Everywhere else your pattern shows instead."
-              : `A picture across the top of your card, on the ${bannerHosts.length} of your servers that let you upload. The others show your pattern.`
+              ? `${bannerWhere}. Everywhere else your pattern shows instead.`
+              : `${bannerWhere}, on the ${bannerHosts.length} of your servers that let you upload. The others show your pattern.`
           }
         >
           <span className="text-xs text-gryt-muted">
@@ -312,25 +366,6 @@ export function CardSettings() {
               </Button>
             )}
           </div>
-          <input
-            ref={bannerInput}
-            type="file"
-            accept={videoBannerHosts.length > 0 ? "image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm" : "image/png,image/jpeg,image/webp,image/gif"}
-            style={{ display: "none" }}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              if (!file) return;
-              void isStillPicture(file).then((still) => (still ? setCropping(file) : changeBanner(file)));
-            }}
-          />
-          <BannerCropDialog
-            file={cropping}
-            onDone={(cropped) => {
-              setCropping(null);
-              if (cropped) changeBanner(cropped);
-            }}
-          />
         </SettingGroup>
       )}
     </>
@@ -390,7 +425,7 @@ export function CardSettings() {
               <div className="flex min-h-0 flex-1 @max-3xl:flex-col">
                 <MemberCardEditor
                   value={style}
-                  onChange={(next) => commit({ ...draft, cardStyle: next })}
+                  onChange={changeStyle}
                   owlHex={owlHex}
                   nickname={nickname}
                   worn={worn}
@@ -442,6 +477,18 @@ export function CardSettings() {
           </Dialog.Popup>
         </Dialog.Portal>
       </Dialog.Root>
+      {bannerPicker}
     </SettingsContainer>
+  );
+}
+
+/** Your row in the member list, drawn from the card as the list draws it: colours and pattern, not the picture. */
+function RowPreview({ nickname, cardStyle, worn, seedKey, avatarSrc, host }: { nickname: string; cardStyle: unknown; worn: string | null; seedKey: string; avatarSrc?: string; host: string }) {
+  const member: MemberInfo = { serverUserId: seedKey, nickname, cardStyle, avatarWorn: worn, status: "online", isMuted: false, isDeafened: false, color: "", isConnectedToVoice: false, hasJoinedChannel: false, streamID: "" };
+  const card = useRowCard(member, host);
+  return (
+    <div className="w-60 max-w-full" aria-hidden="true">
+      <MemberItem card={card} name={nickname} avatar={<Avatar size="small" fallback={nickname[0]} src={avatarSrc} />} />
+    </div>
   );
 }

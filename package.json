@@ -1,7 +1,7 @@
 {
   "name": "gryt-chat",
   "private": true,
-  "version": "1.15.12",
+  "version": "1.16.0-beta.12",
   "description": "Gryt Chat — real-time voice chat desktop client",
   "author": {
     "name": "Gryt Chat",
@@ -28,7 +28,9 @@
     "test:update-supersede": "node scripts/check-update-supersede.ts",
     "test:update-in-progress": "node scripts/check-update-in-progress.ts",
     "test:dm-destination": "node scripts/check-dm-destination.ts",
+    "test:peer-voice-sounds": "node scripts/check-peer-voice-sounds.ts",
     "test:stream-quality": "node scripts/check-stream-quality.ts",
+    "test:picture-crop": "node scripts/check-picture-crop.ts",
     "test:doctor-sfu": "node scripts/check-doctor-sfu.ts",
     "test:narrow-dm-parity": "node scripts/check-narrow-dm-parity.ts",
     "test:search-snippet": "node --disable-warning=ExperimentalWarning scripts/check-search-snippet.ts",
@@ -74,6 +76,7 @@
     "test:message-notification": "node scripts/check-message-notification.ts",
     "test:notification-text": "node scripts/check-notification-text.ts",
     "test:name-tags": "node --disable-warning=ExperimentalWarning scripts/check-name-tags.ts",
+    "test:report-log-window": "node --disable-warning=ExperimentalWarning scripts/check-report-log-window.ts",
     "test:call-timeline": "node --disable-warning=ExperimentalWarning scripts/check-call-timeline.ts",
     "test:mention-tokens": "node --disable-warning=ExperimentalWarning scripts/check-mention-tokens.ts",
     "test:edit-mentions": "node --disable-warning=ExperimentalWarning scripts/check-edit-mentions.ts",
@@ -96,6 +99,7 @@
     "test:builder-config": "node scripts/check-builder-config.ts",
     "test:helper-packaging": "node scripts/check-helper-packaging.ts",
     "test:server-order": "node scripts/check-server-order.ts",
+    "test:carry-guest-servers": "node scripts/check-carry-guest-servers.ts",
     "test:voice-state": "node scripts/check-voice-state-reassert.ts",
     "test:media-state": "node scripts/check-media-state-reassert.ts",
     "test:calls": "node scripts/check-calls.ts",
@@ -142,7 +146,6 @@
     "icons:generate": "node scripts/generate-icons.ts && node scripts/generate-tray-icon.ts",
     "generate:tray": "node scripts/generate-tray-icon.ts",
     "test:peer-keys": "node scripts/check-peer-keys.ts",
-    "test:member-key-wording": "node scripts/check-member-key-wording.ts",
     "test:dm-key-published": "node scripts/check-dm-key-published.ts",
     "test:sealed-text": "node scripts/check-sealed-text.ts",
     "test:sealed-send": "node scripts/check-sealed-send.ts",
@@ -152,12 +155,14 @@
     "test:local-archive": "node --disable-warning=ExperimentalWarning scripts/check-local-archive.ts",
     "test:discord-import": "node --disable-warning=ExperimentalWarning scripts/check-discord-import.ts",
     "test:mls-dm": "node --disable-warning=ExperimentalWarning scripts/check-mls-dm.ts",
+    "test:approve-ticket": "node --disable-warning=ExperimentalWarning scripts/check-approve-ticket.ts",
     "test:mls-restart": "node --disable-warning=ExperimentalWarning scripts/check-mls-restart.ts",
     "test:clear-local-history": "node --disable-warning=ExperimentalWarning scripts/check-clear-local-history.ts",
     "test:channel-permissions": "node scripts/check-channel-permissions.ts",
     "test:report-user": "node scripts/check-report-user.ts",
     "test:unverified-report-copy": "node scripts/check-unverified-report-copy.ts",
     "test:comment-length": "node scripts/check-comment-length.ts",
+    "test:quick-reactions": "node --disable-warning=ExperimentalWarning scripts/check-quick-reactions.ts",
     "test:script-paths": "node scripts/check-script-paths.ts",
     "test:window-buttons": "node scripts/check-window-buttons.ts",
     "test:scan-consent": "node scripts/check-scan-consent.ts",
@@ -246,11 +251,11 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
-    "@gryt/core": "0.33.1",
-    "@gryt/crypto": "0.14.0",
-    "@gryt/owl": "^0.7.0",
-    "@gryt/ui": "^0.46.0",
-    "@gryt/voice": "0.9.1",
+    "@gryt/core": "0.35.4",
+    "@gryt/crypto": "0.17.1",
+    "@gryt/owl": "^0.8.1",
+    "@gryt/ui": "^0.54.0",
+    "@gryt/voice": "0.10.3",
     "@mediapipe/tasks-vision": "^1.0.1",
     "@noble/curves": "^2.3.0",
     "@noble/hashes": "^2.3.0",
@@ -309,6 +314,6 @@
     "dmg-license": "1.0.11"
   },
   "resolutions": {
-    "@gryt/core/@gryt/crypto": "0.14.0"
+    "@gryt/core/@gryt/crypto": "0.17.1"
   }
 }

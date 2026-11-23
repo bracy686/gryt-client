@@ -6,6 +6,7 @@ import toast from "react-hot-toast";
 
 import { clearMentions, clearSignedOut, getUploadsFileUrl, markChannelRead, NotificationLevelMenu, resolveAvatarSrc, serverIconSrc, useAccount, useMentionTracker, useThreadMentions, useThreadUnread, useUnreadTracker } from "@/common";
 import { NOTIFICATION_CHANNEL_OPEN_EVENT } from "@/lib/desktopNotification";
+import { planLineFor } from "@/lib/planMode";
 import { useIsMobile } from "@/mobile";
 import { useSettings } from "@/settings";
 import { useEmbeddedServer } from "@/settings/src/hooks/useEmbeddedServer";
@@ -29,7 +30,7 @@ import { useFakeSpeech } from "../dev/fakeSpeech";
 import { takeCallRequest } from "../hooks/callRequest";
 import { useDirectory } from "../hooks/dmDirectory";
 import { conversationFor, conversationOpened, leftOver, rememberConversation, requestConversation, setDmSpaceOpen, usePendingConversation, useVisitingConversation, visitConversation } from "../hooks/dmSpace";
-import { hideConversation } from "../hooks/hiddenConversations";
+import { hideConversation, showConversation } from "../hooks/hiddenConversations";
 import { useOpenThread } from "../hooks/openThreadMemory";
 import { useAdminActions } from "../hooks/useAdminActions";
 import { useBlocks } from "../hooks/useBlocks";
@@ -41,6 +42,7 @@ import { useChat } from "../hooks/useChat";
 import { conversationTitle, type DirectConversation,useDirectMessages } from "../hooks/useDirectMessages";
 import { useLatencyReporting } from "../hooks/useLatencyReporting";
 import { useChannelIcons, useIsTinyWindow, useMemberListMode, useRoomForThreadBeside, useRoomForVoicePanel } from "../hooks/useNarrowWindow";
+import { usePeerKeyCheck } from "../hooks/usePeerKeyCheck";
 import { usePeerLatency } from "../hooks/usePeerLatency";
 import { useServerPermissions } from "../hooks/usePermissions";
 import { usePins } from "../hooks/usePins";
@@ -56,10 +58,12 @@ import { useSockets } from "../hooks/useSockets";
 import { getUpdateAvailable } from "../hooks/useVersionStatus";
 import { useWaitingBots } from "../hooks/useWaitingBots";
 import { takeVoiceJoin, usePendingVoiceJoin } from "../hooks/voiceJoinRequest";
+import { wantsCloudWelcome,WELCOME_EVENT } from "../lib/cloudWelcomeFlag";
 import { AVATAR_COLUMN_WIDTH, CHANNEL_ICON_LIST_WIDTH, THREAD_PANEL_WIDTH } from "../lib/narrowLayout";
 import { withSharing } from "../lib/screenItems";
 import { VOICE_PRESET_1, type VoiceStop } from "../lib/voiceGrip";
 import { useMlsSource } from "../mls/serverMls";
+import type { MlsAction } from "../mls/useMlsConversation";
 import { type DiscordImportState, useDiscordImport } from "../utils/discordImport";
 import { getCustomEmojis } from "../utils/emojiData";
 import type { SearchFilter } from "../utils/messageSearch";
@@ -68,17 +72,19 @@ import { type CallWindow, openCallWindow } from "../utils/popoutCall";
 import { CallPopout } from "./CallPopout";
 import { ChannelDescription } from "./ChannelDescription";
 import { ChatView } from "./ChatView";
+import { CompareCodesDialog } from "./CompareCodesDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CreateChannelDialog } from "./CreateChannelDialog";
 import { DiscordImportCard } from "./DiscordImportCard";
 import { DiscordImportDialog } from "./DiscordImportDialog";
 import { DiscordImportReceipt } from "./DiscordImportReceipt";
+import { DiscordLinkDialog } from "./DiscordLinkDialog";
 import { DmGroupPanel, DmPersonPanel, PANEL_WIDTH as DM_PANEL_WIDTH } from "./DmInfoPanel";
 import { DmSpaceSidebar } from "./DmSpaceSidebar";
 import { FriendButton } from "./FriendButton";
 import { GroupDialog } from "./GroupDialog";
 import { GroupFace } from "./GroupFace";
-import { hideConversationWithUndo, useConfirmHide } from "./hideConversation";
+import { hideConversationWithUndo } from "./hideConversation";
 import { IncomingCallCard } from "./IncomingCallCard";
 import { type MemberCardActions, MemberCardActionsContext } from "./memberCard/memberCardContext";
 import { MemberSidebarPanel } from "./MemberSidebarPanel";
@@ -87,13 +93,15 @@ import { MessagesHome } from "./MessagesHome";
 import { MobileServerView } from "./MobileServerView";
 import { NewFolderDialog } from "./NewFolderDialog";
 import { NotEncryptedPopover } from "./NotEncryptedPopover";
+import { PausedServer } from "./PausedServer";
+import { PlanModeBanner } from "./PlanModeBanner";
 import { PresenceDot } from "./PresenceDot";
 import { ReportUserDialog } from "./ReportUserDialog";
 import { SearchPanel } from "./SearchPanel";
 import { SecurityNoticeBanner } from "./SecurityNoticeBanner";
 import { ServerChip } from "./ServerChip";
 import { ServerConfirmDialogs } from "./ServerConfirmDialogs";
-import { ServerLoadingStates } from "./ServerLoadingStates";
+import { NoChannels, ServerLoadingStates } from "./ServerLoadingStates";
 import { ServerNoticePanel } from "./ServerNoticePanel";
 import { ServerSidebar } from "./ServerSidebar";
 import { SidebarEditDialog } from "./SidebarEditDialog";
@@ -177,7 +185,7 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
     [directory],
   );
   const { connect, currentServerConnected, currentChannelConnected, isConnected, isConnecting, videoStreams, streamSources } = useSFU();
-  const { serverDetailsList, clients, memberLists, serverProfiles, sockets } = useSockets();
+  const { serverDetailsList, clients, memberLists, serverProfiles, sockets, memberKeyStates } = useSockets();
   const { login } = useAccount();
   /** Servers this app hosts, for Manage server. Empty in a browser. */
   const { servers: hostedServers } = useEmbeddedServer();
@@ -238,6 +246,7 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
   useAnyCallButtonPress(() => setVoiceStop(VOICE_PRESET_1));
 
   const [focusedChatHidden, setFocusedChatHidden] = useState(false);
+  const [discordLinkOpen, setDiscordLinkOpen] = useState(false);
   const [createChannelOpen, setCreateChannelOpen] = useState(false);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [createChannelType, setCreateChannelType] = useState<"chat" | "voice" | "forum" | "automated">("chat");
@@ -291,12 +300,8 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
   const [dmSearchOpen, setDmSearchOpen] = useState(false);
   // The conversation info panel on the right of the messages space (GRYT-1745).
   const [dmInfoOpen, setDmInfoOpen] = useState(true);
-  const [compareSignal, setCompareSignal] = useState(0);
-  const compareKeys = useCallback(() => {
-    setDmInfoOpen(true);
-    setCompareSignal((n) => n + 1);
-  }, []);
-  const [askHide, hideDialog] = useConfirmHide();
+  const [compareOpen, setCompareOpen] = useState(false);
+  const compareKeys = useCallback(() => setCompareOpen(true), []);
   const [pendingLeave, setPendingLeave] = useState<{ title: string; leave: () => void } | null>(null);
   const askLeave = (title: string, leave: () => void) => setPendingLeave({ title, leave });
   const openDmSearch = useCallback(() => {
@@ -449,6 +454,16 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
     isConnected: currentConnectionStatus === "connected",
   });
   // `?fakedms` in dev: the fake conversations open like real ones on the server carrying them.
+  // Read once per server: the card clears the flag as it shows, and must not vanish on the next render.
+  const welcomeHost = currentlyViewingServer?.host;
+  const welcomeOnOpen = useMemo(() => !!welcomeHost && wantsCloudWelcome(welcomeHost), [welcomeHost]);
+  const [welcomeFor, setWelcomeFor] = useState<string | null>(null);
+  const cloudWelcome = welcomeOnOpen || (!!welcomeHost && welcomeFor === welcomeHost);
+  useEffect(() => {
+    const on = (e: Event) => setWelcomeFor((e as CustomEvent<string>).detail);
+    window.addEventListener(WELCOME_EVENT, on);
+    return () => window.removeEventListener(WELCOME_EVENT, on);
+  }, []);
   const directConversations = useMemo(
     () => (fakeDmsOn && fakeHostNow() === currentlyViewingServer?.host ? [...realDirectConversations, ...fakeConversations()] : realDirectConversations),
     // The directory rebuilds when the fake host is claimed, which is the moment to look again.
@@ -488,7 +503,7 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
     canViewVoiceChannelText, activeChannelName, activeChannelType, activeChannelAutomated, activeChannelLayout, activeChannelForumTags, activeChannelDescription,
     restoreText, clearRestoreText, fetchOlderMessages, isLoadingOlder, hasOlderMessages, historyWindow,
     plaintextPrompt, confirmPlaintextSend, cancelPlaintextSend, reencryptReady,
-    mlsNotice, composerHeld, deleteMlsMessage, reactMlsMessage, mlsReportsTaken, archiveFailed, mlsActions, peerKeyNotice,
+    mlsNotice, composerHeld, deleteMlsMessage, reactMlsMessage, mlsReportsTaken, archiveFailed, mlsActions, peerKeyNotice, mlsNotAdded, sealedHistory,
   } = useChat({
     currentConnection, activeConversationId, currentlyViewingServer,
     currentChannelId, isConnected, serverDetailsList, nickname,
@@ -505,11 +520,9 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
       react: reactMlsMessage,
       reportsTaken: mlsReportsTaken,
       archiveFailed,
-      actions: peerKeyNotice
-        ? [{ label: `Check ${activeConversation?.other.nickname ?? "their"}'s key`, run: compareKeys }]
-        : mlsActions,
+      actions: noticeActions(peerKeyNotice, mlsNotAdded, mlsActions, compareKeys),
     }),
-    [mlsNotice, composerHeld, deleteMlsMessage, reactMlsMessage, mlsReportsTaken, archiveFailed, mlsActions, peerKeyNotice, activeConversation?.other.nickname, compareKeys],
+    [mlsNotice, composerHeld, deleteMlsMessage, reactMlsMessage, mlsReportsTaken, archiveFailed, mlsActions, peerKeyNotice, mlsNotAdded, compareKeys],
   );
 
   /** The server already withholds new messages, so this covers what was drawn
@@ -600,10 +613,12 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
   const goToConversation = useCallback((conversationId: string) => {
     const host = currentlyViewingServer?.host;
     if (!host) return;
+    // Messaging someone again is how a hidden conversation comes back.
+    showConversation(host, currentServerUserId ?? "", conversationId);
     requestConversation(host, conversationId);
     // This server, so the rail's button comes back here. From inside, it's ignored.
     setDmSpaceOpen(true, { kind: "server", host });
-  }, [currentlyViewingServer?.host]);
+  }, [currentlyViewingServer?.host, currentServerUserId]);
 
   /** Waits for `dm:opened` rather than deriving the id, which would mean the
       client owning a rule the server owns and opening empty when they drift. */
@@ -707,8 +722,8 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
     setSelectedDmId(conversation.conversation_id);
   }, [setSelectedDmId]);
 
-  /* Hiding the one being read points the view at a conversation that has moved
-     under the Hidden group, so the selection goes back to the channels. */
+  /* Hiding the one being read would leave the view on a conversation that's no
+     longer listed, so the selection goes back to the channels. */
   const forgetHiddenDm = useCallback((conversationId: string) => {
     setSelectedDmId((current) => (current === conversationId ? null : current));
   }, [setSelectedDmId]);
@@ -869,6 +884,24 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
     setSelectedDmId(null);
     handleChannelClick(channel);
   }, [handleChannelClick, setSelectedDmId]);
+
+  /* Go to message from somewhere outside the chat, like the storage list in server settings. */
+  useEffect(() => {
+    const open = (event: Event) => {
+      const d = (event as CustomEvent<{ host?: string; conversationId?: string; messageId?: string }>).detail;
+      const viewing = currentlyViewingServer?.host;
+      if (!d?.conversationId || !d.messageId || !viewing || d.host !== viewing) return;
+      const channel = (serverDetailsList[viewing]?.channels || []).find((c) => c.id === d.conversationId);
+      if (channel) handleChannelClickAndCloseDm(channel);
+      else {
+        visitConversation(d.conversationId);
+        setSelectedDmId(d.conversationId);
+      }
+      setPendingJump({ conversationId: d.conversationId, messageId: d.messageId, nonce: Date.now() });
+    };
+    window.addEventListener("open_message", open);
+    return () => window.removeEventListener("open_message", open);
+  }, [currentlyViewingServer?.host, serverDetailsList, handleChannelClickAndCloseDm, setSelectedDmId]);
 
   /** A ring carries a nickname and nothing else, or a person's appearance is a
       second copy to go stale. A caller not in the list draws from the name. */
@@ -1059,6 +1092,7 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
     );
   }, [activeDm, viewingHost, memberListMap]);
 
+  const peerKeys = usePeerKeyCheck(viewingHost ?? undefined, activeDm?.kind === "dm" ? activeDm.other.server_user_id : undefined);
   const dmHeaderSubtitle = useMemo(() => {
     if (!activeDm || !currentlyViewingServer) return undefined;
     const { host, name: stored } = currentlyViewingServer;
@@ -1069,12 +1103,24 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
         {activeDm.kind === "group" ? <span>{activeDm.members.length + 1} people ·</span> : <span>on</span>}
         <ServerChip name={name} icon={serverIconSrc(host, stored || "", serverDetailsList)} />
         <span aria-hidden>·</span>
-        {sealed ? (
+        {sealed && activeDm.kind === "dm" && (
+          <button
+            type="button"
+            onClick={compareKeys}
+            className="inline-flex cursor-pointer items-center gap-1 border-0 bg-transparent p-0 text-xs underline underline-offset-2"
+            style={{ color: peerKeys.comparedAt ? "var(--gryt-success-9)" : "inherit" }}
+          >
+            <PiShieldCheckFill size={11} aria-hidden />
+            {peerKeys.comparedAt ? "Encrypted, codes compared" : "Encrypted"}
+          </button>
+        )}
+        {sealed && activeDm.kind !== "dm" && (
           <>
             <PiShieldCheckFill size={11} aria-hidden />
             <span>Encrypted</span>
           </>
-        ) : (
+        )}
+        {!sealed && (
           /* Boards 5b and 5c: why, what to do, and turning the dots off. */
           <NotEncryptedPopover
             decision={sealing}
@@ -1088,7 +1134,7 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
         )}
       </span>
     );
-  }, [activeDm, currentlyViewingServer, serverDetailsList, sealing, memberNames, sendChat, compareKeys]);
+  }, [activeDm, currentlyViewingServer, serverDetailsList, sealing, memberNames, sendChat, compareKeys, peerKeys.comparedAt]);
 
   /* Board 7, option A: behind ⋯ in a channel's header. The pin button stays beside it. */
   const channelMoreMenu = useMemo(() => {
@@ -1331,6 +1377,7 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
   const wideOrMobile = isMobile ? "mobile" : "wide";
   const layout = isTiny ? "tiny" : wideOrMobile;
   const sidePanel = sidePanelOf({ searchOpen, dmSpace, dmSearchOpen, activeDm: !!activeDm, isTiny });
+  const noChannels = !dmSpace && hostChannels.length === 0;
   const chatView = dmSpace && !activeDm ? (
     <MessagesHome onSearch={openDmSearch} />
   ) : (
@@ -1339,6 +1386,10 @@ export const ServerView = ({ dmSpace = false }: { dmSpace?: boolean }) => {
         /* Wide enough for the thread to sit beside the conversation rather than
            take the chat pane. */
         threadBeside={threadBeside}
+        discordOfferHost={!activeDm && currentUserRole === "owner" && serverDetails?.server_info?.discord_offer ? host : undefined}
+        cloudWelcomeHost={!activeDm && currentUserRole === "owner" && cloudWelcome ? host : undefined}
+        isOwner={serverDetails?.server_info?.is_owner === true}
+        planLine={!activeDm ? planLineFor(serverDetails?.server_info, serverName || host) : undefined}
         /* Under the header, not above: above is app chrome, and this is somebody
            else's machine talking. */
         underHeader={
@@ -1415,6 +1466,18 @@ forumTags={activeDm ? [] : activeChannelForumTags}
     );
   }
 
+  if (!dmSpace && serverDetails.server_info?.plan_mode === "paused") {
+    return (
+      <PausedServer
+        host={host}
+        serverName={serverName || host}
+        isOwner={serverDetails.server_info?.is_owner === true}
+        dates={serverDetails.server_info ?? {}}
+        onLeave={() => setShowRemoveServer({ host, mode: "leave" })}
+      />
+    );
+  }
+
   // D6: their imported messages are arriving and none of yours are, so offer to add your side.
   const peerHasImported = activeDm?.kind === "dm"
     && visibleChatMessages.some((m) => m.imported_from && m.sender_server_id === activeDm.other.server_user_id);
@@ -1432,6 +1495,7 @@ forumTags={activeDm ? [] : activeChannelForumTags}
         {!dmSpace && currentConnectionStatus === "connected" && (
           <SecurityNoticeBanner host={host} serverInfo={serverDetails.server_info} hostedHere={!!hostedHere} />
         )}
+        {!dmSpace && currentConnectionStatus === "connected" && <PlanModeBanner host={host} serverInfo={serverDetails.server_info} serverName={serverName || host} />}
         {layout === "tiny" && (
           /* One channel and no way to change it; the way out is a bigger window.
              A call is the exception, or the microphone has no button to close it. */
@@ -1599,6 +1663,7 @@ forumTags={activeDm ? [] : activeChannelForumTags}
               serverName={serverName}
               serverRole={currentUserRole}
               onOpenSettings={onOpenSettings}
+              onLinkDiscord={serverDetails?.server_info?.discord_live ? () => setDiscordLinkOpen(true) : undefined}
               onOpenInvites={onOpenInvites}
               onManageServer={onManageServer}
               pendingReportCount={pendingReportCount}
@@ -1702,7 +1767,7 @@ forumTags={activeDm ? [] : activeChannelForumTags}
                 ...(isVoiceOnThisServer && isServerUnreachable && { opacity: 0.5, pointerEvents: "none" as const }),
                 transition: "opacity 0.3s ease",
               }}>
-                {chatView}
+                {noChannels ? <NoChannels onCreate={canManage ? () => handleAddItem("channel:text") : undefined} /> : chatView}
               </div>
             </div>
             {sidePanel === "search" && (
@@ -1784,7 +1849,6 @@ forumTags={activeDm ? [] : activeChannelForumTags}
               ) : (
                 <DmPersonPanel
                   host={host}
-                  compareSignal={compareSignal}
                   member={memberListMap[activeDm.other.server_user_id]}
                   conversation={activeDm}
                   pins={dmPins}
@@ -1792,10 +1856,8 @@ forumTags={activeDm ? [] : activeChannelForumTags}
                   onJump={(messageId) => setPendingJump({ conversationId: activeDm.conversation_id, messageId, nonce: Date.now() })}
                   onHide={() => {
                     const dm = activeDm;
-                    askHide(conversationTitle(dm), () => {
-                      hideConversationWithUndo(host, currentServerUserId ?? "", dm.conversation_id, conversationTitle(dm));
-                      forgetHiddenDm(dm.conversation_id);
-                    });
+                    hideConversationWithUndo(host, currentServerUserId ?? "", dm.conversation_id, conversationTitle(dm));
+                    forgetHiddenDm(dm.conversation_id);
                   }}
                   onSearch={openDmSearch}
                   onImport={() => setImportOpen(true)}
@@ -1861,6 +1923,7 @@ forumTags={activeDm ? [] : activeChannelForumTags}
           avatarWorn={callerAvatarWorn}
           onAccept={handleAcceptCall}
           onDecline={() => declineCall(incomingCall.conversation_id)}
+          keyChanged={memberKeyStates[viewingHost ?? ""]?.[incomingCall.from.server_user_id]?.decision.kind === "changed"}
         />
       ) : null}
 
@@ -1906,7 +1969,18 @@ forumTags={activeDm ? [] : activeChannelForumTags}
         }}
       />
 
-      {hideDialog}
+      {activeDm?.kind === "dm" && viewingHost && (
+        <CompareCodesDialog
+          open={compareOpen}
+          onOpenChange={setCompareOpen}
+          host={viewingHost}
+          conversationId={activeDm.conversation_id}
+          peerId={activeDm.other.server_user_id}
+          peerName={activeDm.other.nickname}
+          onCall={() => startCall(activeDm.conversation_id)}
+          sealedHistory={sealedHistory}
+        />
+      )}
       {activeDm?.kind === "dm" && (
         <DiscordImportDialog
           open={discordImport.dialogOpen}
@@ -1944,6 +2018,9 @@ forumTags={activeDm ? [] : activeChannelForumTags}
           setPendingLeave(null);
         }}
       />
+      {serverDetails?.server_info?.discord_bridge && (
+        <DiscordLinkDialog host={host} open={discordLinkOpen} onOpenChange={setDiscordLinkOpen} />
+      )}
       <ServerConfirmDialogs
         pendingDeleteItem={pendingDeleteItem}
         channelById={channelById}
@@ -2008,3 +2085,9 @@ forumTags={activeDm ? [] : activeChannelForumTags}
     </MemberCardActionsContext.Provider>
   );
 };
+
+/** The buttons under a DM's notice line: comparing codes comes first when that's what it's about. */
+function noticeActions(keyChanged: boolean, notAdded: boolean, actions: MlsAction[], compare: () => void): MlsAction[] {
+  if (keyChanged) return [{ label: "Compare codes", run: compare }];
+  return notAdded ? [{ label: "Show code", run: compare }, ...actions] : actions;
+}

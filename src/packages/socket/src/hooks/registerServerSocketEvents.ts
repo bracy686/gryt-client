@@ -7,7 +7,6 @@ import { setAnnouncedPlugins } from "@/addons";
 import {
   addMention,
   addThreadMention,
-  getAccountProfile,
   getServerAccessToken,
   getServerRefreshToken,
   getStoredWorn,
@@ -27,16 +26,20 @@ import {
   subscribeToPrefs,
 } from "@/common";
 import {
+  checkApproveTicket,
   evaluateMemberKeys,
   forgetGuestScope,
+  getCertificateSub,
   identityScopeFor,
   localPeerPinStore,
   type MemberKeyState,
   ownDmPublicKey,
   ownPersonPublicKey,
+  pendingApproveTicket,
 } from "@/common";
 import { rememberChannelNames } from "@/lib/channelDirectory";
 import { claimOutcomeToast, guestIsGone, takeClaimOutcome } from "@/lib/identityClaimOutcome";
+import { isLapsedPlanMode, planModeRefusalText } from "@/lib/planMode";
 import type {
   Server,
   serverDetails,
@@ -45,7 +48,8 @@ import type {
 } from "@/settings/src/types/server";
 
 import { PiArrowsClockwiseFill, PiClockFill, PiInfoFill } from "../../../../lib/icons";
-import { type DmKeyFix, dmKeyWarningsOff, showDmKeyWarning } from "../components/dmKeyWarningToast";
+import { showApprovePrompt } from "../components/approvePromptToast";
+import { showHistoryAsk } from "../components/historyAskToast";
 import type { MemberInfo } from "../components/MemberSidebar";
 import {
   applyCallMemberships,
@@ -54,7 +58,8 @@ import {
 } from "../lib/callMembers";
 import { cardToOffer, cardUpdatePayload, hasCardFields } from "../lib/memberCard/cardStore";
 import { cardProfileFor } from "../lib/memberCard/generatedCard";
-import { attachServerMls, serverMlsOwnKey, serverMlsPinned, serverMlsReady } from "../mls/serverMls";
+import { resendHistoryAsks } from "../mls/historyAsk";
+import { answerOwnAsk, attachServerMls, serverMlsOwnKey, serverMlsPinned, serverMlsReady } from "../mls/serverMls";
 import type { Clients, ServerProfile } from "../types/clients";
 import { publishDmKey } from "../utils/dmKeys";
 import { fetchCustomEmojis, setCustomEmojis } from "../utils/emojiData";
@@ -106,76 +111,8 @@ export interface ServerEventContext {
   setIsServerDeafened: (value: boolean) => void;
 }
 
-/** Long enough for our publish and the member list after it to land, short
-    enough that a genuine mismatch is not hidden. */
-const DM_KEY_WARNING_DELAY_MS = 5000;
-
-/** Pending warnings, per host, so a resolution can cancel one before it shows. */
-const dmKeyWarningTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-/* One toast for every server with the mismatch: a second device mismatches on all of them,
-   and one toast each stacked up into a wall of the same warning. */
-const DM_KEY_TOAST_ID = "dm-key-rewritten";
-const dmKeyWarnedHosts = new Map<string, string>();
-let dmKeyLastFix: DmKeyFix = "none";
-
-function renderDmKeyWarning(): void {
-  if (dmKeyWarnedHosts.size === 0 || dmKeyWarningsOff()) {
-    toast.dismiss(DM_KEY_TOAST_ID);
-    return;
-  }
-  showDmKeyWarning({
-    id: DM_KEY_TOAST_ID,
-    serverNames: [...dmKeyWarnedHosts.values()],
-    fix: dmKeyLastFix,
-    onDismiss: () => {
-      for (const host of dmKeyWarnedHosts.keys()) rememberDmKeyWarningDismissed(host);
-      dmKeyWarnedHosts.clear();
-    },
-  });
-}
-
-/**
- * A dismissal that holds. The warning is re-armed from every `members:list`, so
- * dismissing it bought seconds. Per device: the key it is about is this device's.
- */
-const DM_KEY_DISMISSED_PREFIX = "gryt_dm_key_warning_dismissed:";
-
-function dmKeyWarningDismissed(host: string): boolean {
-  try {
-    return localStorage.getItem(`${DM_KEY_DISMISSED_PREFIX}${host}`) === "1";
-  } catch {
-    // No storage. Showing it is the safe direction for a warning.
-    return false;
-  }
-}
-
-function rememberDmKeyWarningDismissed(host: string): void {
-  try {
-    localStorage.setItem(`${DM_KEY_DISMISSED_PREFIX}${host}`, "1");
-  } catch {
-    /* Then it comes back next launch, which is a nuisance and not a bug. */
-  }
-}
-
-function forgetDmKeyWarningDismissed(host: string): void {
-  try {
-    localStorage.removeItem(`${DM_KEY_DISMISSED_PREFIX}${host}`);
-  } catch {
-    /* as above */
-  }
-}
-
-/** What this device can do about a mismatch, asked of the account. */
-async function dmKeyFix(): Promise<DmKeyFix> {
-  try {
-    return (await getAccountProfile()).sub ? "set-up" : "none";
-  } catch {
-    // Not signed in, or the account would not answer. Neither button would
-    // work, so neither is offered.
-    return "none";
-  }
-}
+const lastKeyStates = new Map<string, Record<string, MemberKeyState>>();
+const lastMembers = new Map<string, MemberInfo[]>();
 
 type MentionRow = { conversation_id?: string; thread_id?: string | null; kind?: string };
 
@@ -536,6 +473,10 @@ export function registerServerSocketEvents(socket: Socket, host: string, ctx: Se
     setServerNotice(host, payload);
   });
 
+  socket.on("server:plan_mode", (data: { error?: unknown }) => {
+    if (isLapsedPlanMode(data?.error)) toast(planModeRefusalText(data.error), { id: `plan-mode-${host}` });
+  });
+
   socket.on("server:kicked", (data: { reason?: string; action?: "kick" | "ban" }) => {
     const serverName = serversRef.current[host]?.name || host;
     toast.error(data?.reason ? `${serverName}: ${data.reason}` : `You were removed from ${serverName}.`);
@@ -801,7 +742,41 @@ export function registerServerSocketEvents(socket: Socket, host: string, ctx: Se
     }
   });
 
+  // A device waiting for your account key asks your other devices here, now and on each reconnect.
+  const askToBeApproved = () => {
+    const ticket = pendingApproveTicket();
+    if (ticket && socket.connected) socket.emit("device:approve:ask", { ticket });
+  };
+  socket.on("connect", askToBeApproved);
+  window.addEventListener("gryt:sign-in-approval", askToBeApproved);
+  socket.on("disconnect", () => window.removeEventListener("gryt:sign-in-approval", askToBeApproved));
+  askToBeApproved();
+  socket.on("device:approve:asked", (ask?: { askId?: string; ticket?: string }) => {
+    const sub = getCertificateSub();
+    if (!sub || pendingApproveTicket() || typeof ask?.askId !== "string" || typeof ask.ticket !== "string") return;
+    const askId = ask.askId;
+    void checkApproveTicket(ask.ticket, sub).then((ok) => {
+      if (ok) showApprovePrompt(ok.deviceType, () => socket.emit("device:approve:deny", { askId }));
+    });
+  });
+  socket.on("device:approve:denied", () => window.dispatchEvent(new Event("gryt:approve-denied")));
+
+  /* "Send me your copy" from someone in a DM: offered only while their key is the one this device
+     trusts, so a key nobody has checked can't pull history. */
+  socket.on("dm:history:asked", (asked?: { conversationId?: string; from?: string }) => {
+    if (typeof asked?.conversationId !== "string" || typeof asked.from !== "string") return;
+    if (asked.from === myServerUserIdByHost.get(host)) {
+      void answerOwnAsk(host, asked.conversationId).catch((e: unknown) => console.warn("[MLS] Couldn't send our copy to our own device:", e));
+      return;
+    }
+    if (lastKeyStates.get(host)?.[asked.from]?.decision.kind !== "known") return;
+    const name = lastMembers.get(host)?.find((m) => m.serverUserId === asked.from)?.nickname ?? "Someone";
+    showHistoryAsk(host, asked.conversationId, asked.from, name);
+  });
+
   socket.on("members:list", (data: MemberInfo[]) => {
+    lastMembers.set(host, data);
+    resendHistoryAsks(socket, host, (id) => data.some((m) => m.serverUserId === id && m.status !== "offline"));
     const membersWithGrayColor = data.map(member => ({
       ...member,
       color: "var(--gryt-neutral-6)"
@@ -826,43 +801,14 @@ export function registerServerSocketEvents(socket: Socket, host: string, ctx: Se
       )
       .then((states) => {
         setMemberKeyStates((old) => ({ ...old, [host]: states }));
+        lastKeyStates.set(host, states);
         const mine = states[myServerUserIdByHost.get(host) ?? ""];
-        const mineRow = data.find((m) => m.serverUserId === myServerUserIdByHost.get(host));
-        serverMlsOwnKey(host, !!(mine?.ownKeyRewritten || mine?.ownPersonKeyRewritten), mineRow?.dmKeyBinding ?? null, mineRow?.keyResetAt ?? null);
+        serverMlsOwnKey(
+          host,
+          !!(mine?.ownKeyRewritten || mine?.ownPersonKeyRewritten),
+          !mine?.ownKeyRewritten && !!mine?.ownPersonKeyRewritten,
+        );
         serverMlsPinned(host);
-
-        /* Held back before it is shown, since our own publish races the first
-           member list. A second device really does mismatch, so it is named first. */
-        const myId = myServerUserIdByHost.get(host);
-        const pending = dmKeyWarningTimers.get(host);
-
-        if (myId && states[myId]?.ownKeyRewritten) {
-          if (pending === undefined && !dmKeyWarningDismissed(host)) {
-            dmKeyWarningTimers.set(
-              host,
-              setTimeout(() => {
-                dmKeyWarningTimers.delete(host);
-                /* Which repair to offer depends on the account, so it is asked
-                   here rather than guessed. A guest gets no button at all. */
-                void dmKeyFix().then((fix) => {
-                  if (dmKeyWarningDismissed(host)) return;
-                  dmKeyLastFix = fix;
-                  dmKeyWarnedHosts.set(host, serversRef.current[host]?.name || host);
-                  renderDmKeyWarning();
-                });
-              }, DM_KEY_WARNING_DELAY_MS),
-            );
-          }
-        } else {
-          if (pending !== undefined) {
-            clearTimeout(pending);
-            dmKeyWarningTimers.delete(host);
-          }
-          /* The mismatch is gone, so an earlier dismissal has done its job. If
-             it ever comes back it is news again, and should say so. */
-          forgetDmKeyWarningDismissed(host);
-          if (dmKeyWarnedHosts.delete(host)) renderDmKeyWarning();
-        }
       })
       .catch(() => {
         // Storage that will not read, most likely. Leaving the previous states

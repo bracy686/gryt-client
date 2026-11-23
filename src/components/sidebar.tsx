@@ -28,17 +28,19 @@ import type {
   serverDetailsList as ServerDetailsListType,
   Servers,
 } from "@/settings/src/types/server";
-import { useDirectoryUnread, useDmSpaceOpen, useLeaveDmSpace, useOpenDmSpace, useServerChannelUnread, useServerManagement, useSockets } from "@/socket";
+import { useDirectoryUnread, useDmSpaceOpen, useLeaveDmSpace, useOpenDmSpace, useServerChannelUnread, useServerManagement, useSockets, useWaitingOnYou } from "@/socket";
 import { ConfirmDialog } from "@/socket/src/components/ConfirmDialog";
 import { MarkAsReadItem } from "@/socket/src/components/MarkAsReadItem";
 import { ServerDoctor } from "@/socket/src/components/ServerDoctor";
 import type { ServerRingState } from "@/socket/src/components/ServerStatusRing";
 import { ServerStatusRing } from "@/socket/src/components/ServerStatusRing";
+import { useLeavingServers } from "@/socket/src/hooks/leavingServers";
 import { useOpenInviteLink } from "@/socket/src/hooks/useOpenInviteLink";
 import { useVoicePresence,type VoicePresence } from "@/webRTC";
 import { MiniControls } from "@/webRTC/src/components/miniControls";
 
 import { useIdentityClaim } from "../hooks/useIdentityClaim";
+import { getElectronAPI } from "../lib/electron";
 import { PiChatsTeardropFill } from "../lib/icons";
 import { PiBroadcastFill, PiBugFill, PiChatTeardropDotsFill, PiGearFill, PiMicrophoneFill, PiMicrophoneSlashFill, PiPlus, PiSignInFill } from "../lib/icons";
 import { useReportForm } from "../lib/reports/useReportForm";
@@ -83,14 +85,6 @@ function iconOpacity(s: { bright: boolean; isUnavailable: boolean; awaitingAppro
 }
 
 
-/** First letters and the ending only: yours to recognise, little to someone looking on. */
-function maskEmail(email: string): string {
-  const at = email.lastIndexOf("@");
-  if (at < 1) return email;
-  const domain = email.slice(at + 1);
-  const dot = domain.lastIndexOf(".");
-  return `${email[0]}•••@${domain[0] ?? ""}•••${dot > 0 ? domain.slice(dot) : ""}`;
-}
 export function Sidebar({ setShowAddServer }: SidebarProps) {
   const { isSignedIn, email, login, loginAnotherAccount, logout } = useAccount();
   const { nickname, avatarDataUrl, setShowSettings, openSettings } = useSettings();
@@ -109,6 +103,8 @@ export function Sidebar({ setShowAddServer }: SidebarProps) {
     setShowDiscovery,
     newLanServers,
   } = useServerManagement();
+  const leaving = useLeavingServers();
+  const shownHosts = orderedServerHosts.filter((h) => !leaving.has(h));
   const { isElectron } = useLanDiscovery();
 
   /**
@@ -155,7 +151,8 @@ export function Sidebar({ setShowAddServer }: SidebarProps) {
   const dmSpaceOpen = useDmSpaceOpen();
   const openDmSpace = useOpenDmSpace();
   const leaveDmSpace = useLeaveDmSpace();
-  const { total: dmUnread } = useDirectoryUnread();
+  const { total: dmUnreadCount } = useDirectoryUnread();
+  const dmUnread = dmUnreadCount + useWaitingOnYou();
 
   return (
     <div className="flex flex-col h-full gap-4 items-center justify-between" data-gryt="sidebar">
@@ -165,7 +162,7 @@ export function Sidebar({ setShowAddServer }: SidebarProps) {
         <Tooltip title="Direct messages" side="right">
           <div className="relative">
             <IconButton
-              aria-label="Direct messages"
+              aria-label={dmUnread > 0 ? `Direct messages, ${dmUnread} waiting` : "Direct messages"}
               aria-pressed={dmSpaceOpen}
               tone={dmSpaceOpen ? "primary" : "ghost"}
               /* In, to the conversation you were last in. Again from inside, back to
@@ -184,7 +181,7 @@ export function Sidebar({ setShowAddServer }: SidebarProps) {
         <div style={{ width: 26, height: 1, background: "var(--gryt-neutral-6)", alignSelf: "center" }} />
         <Reorder.Group
           axis="y"
-          values={orderedServerHosts}
+          values={shownHosts}
           onReorder={reorderServers}
           as="div"
           style={{
@@ -196,7 +193,7 @@ export function Sidebar({ setShowAddServer }: SidebarProps) {
             margin: 0,
           }}
         >
-          {orderedServerHosts.map((host) => (
+          {shownHosts.map((host) => (
             <ServerItem
               key={host}
               host={host}
@@ -351,7 +348,7 @@ export function Sidebar({ setShowAddServer }: SidebarProps) {
                   <>
                     {email && (
                       <div className="px-3 py-1 text-xs text-gryt-muted">
-                        Signed in as {maskEmail(email)}
+                        Signed in as {email}
                       </div>
                     )}
                     <Menu.Item onClick={() => void loginAnotherAccount()}>
@@ -369,6 +366,13 @@ export function Sidebar({ setShowAddServer }: SidebarProps) {
                     </div>
                   </Menu.Item>
                 )}
+              </>
+            )}
+            {/* Linux only: GNOME has no tray, so closing the window left no way out. */}
+            {isElectron && /Linux/.test(navigator.userAgent) && (
+              <>
+                <Menu.Separator />
+                <Menu.Item onClick={() => getElectronAPI()?.quit()}>Quit Gryt</Menu.Item>
               </>
             )}
           </Menu.Popup>

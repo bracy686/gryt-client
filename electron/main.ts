@@ -12,6 +12,7 @@ import {
   net,
   Notification,
   powerMonitor,
+  powerSaveBlocker,
   safeStorage,
   screen,
   session,
@@ -815,10 +816,11 @@ function handleDeepLink(url: string): void {
       const parsed = new URL(url);
       const host = parsed.searchParams.get("host") || "";
       const code = parsed.searchParams.get("code") || "";
+      const welcome = parsed.searchParams.get("welcome") === "1";
 
       // No code is still an invite: a server anyone can join is shared by its address alone.
       if (host) {
-        mainWindow.webContents.send("deep-link-invite", { host, code });
+        mainWindow.webContents.send("deep-link-invite", { host, code, welcome });
       }
     } else if (url.startsWith(`${PROTOCOL}://card`) || url.startsWith(`${PROTOCOL}://owl`)) {
       const look = parseLookLink(url);
@@ -2288,6 +2290,22 @@ function createMainWindow(): BrowserWindow {
     }
   );
 
+  // Electron shows no menu of its own; only text fields and selections get one, the app draws the rest.
+  mainWindow.webContents.on("context-menu", (_event, params) => {
+    const items: Electron.MenuItemConstructorOptions[] = params.dictionarySuggestions.map((word) => ({
+      label: word,
+      click: () => mainWindow?.webContents.replaceMisspelling(word),
+    }));
+    if (items.length > 0) items.push({ type: "separator" });
+    if (params.isEditable) {
+      items.push({ role: "cut", enabled: params.editFlags.canCut }, { role: "copy", enabled: params.editFlags.canCopy },
+        { role: "paste", enabled: params.editFlags.canPaste }, { type: "separator" }, { role: "selectAll" });
+    } else if (params.selectionText) {
+      items.push({ role: "copy" });
+    }
+    if (items.length > 0) Menu.buildFromTemplate(items).popup({ window: mainWindow ?? undefined });
+  });
+
   mainWindow.webContents.setWindowOpenHandler(
     ({ url }) => {
       if (url === "about:blank") {
@@ -2573,7 +2591,7 @@ function keycodeForDomCode(
 
 // ── Hotkey bindings ─────────────────────────────────────────────────────
 
-type HotkeyAction = "ptt" | "mute" | "deafen" | "disconnect";
+type HotkeyAction = "ptt" | "ptm" | "mute" | "deafen" | "disconnect";
 
 interface HotkeyBinding {
   /** uiohook keycode, or null when the binding is a mouse button. */
@@ -2921,6 +2939,17 @@ function trayTooltip(): string {
  * A hidden window's timers fall to roughly one a minute, which starves the voice
  * engine's 15s keep-alive and its dropped-socket check. Off for a call only.
  */
+let sleepBlockerId: number | null = null;
+
+// The screen may still turn off; the system doesn't sleep and drop the call.
+function setSleepBlocked(blocked: boolean): void {
+  if (blocked && sleepBlockerId === null) sleepBlockerId = powerSaveBlocker.start("prevent-app-suspension");
+  if (!blocked && sleepBlockerId !== null) {
+    powerSaveBlocker.stop(sleepBlockerId);
+    sleepBlockerId = null;
+  }
+}
+
 function setRendererThrottling(allowed: boolean): void {
   const contents = mainWindow?.webContents;
   if (!contents || contents.isDestroyed()) return;
@@ -3180,6 +3209,11 @@ if (!gotSingleInstanceLock) {
         "get-beta-channel",
         () => isOnBetaChannel()
       );
+
+      ipcMain.on("quit-app", () => {
+        isQuitting = true;
+        app.quit();
+      });
 
       ipcMain.on(
         "set-beta-channel",
@@ -3462,6 +3496,7 @@ if (!gotSingleInstanceLock) {
             setRendererThrottling(
               !next.inVoice
             );
+            setSleepBlocked(next.inVoice);
           }
 
           refreshTray();

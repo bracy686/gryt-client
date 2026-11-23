@@ -23,6 +23,7 @@ const { orderOwnDevices, ownDeviceAdded, ownDeviceLabel, removedHereLine, remove
   "../src/packages/socket/src/mls/ownDevices.ts"
 );
 const removedHere = await import("../src/packages/socket/src/mls/removedHere.ts");
+const { openedSealedHistory, shareHistory } = await import("../src/packages/socket/src/mls/shareHistory.ts");
 
 const tests: { name: string; fn: () => void | Promise<void> }[] = [];
 const test = (name: string, fn: () => void | Promise<void>) => tests.push({ name, fn });
@@ -49,6 +50,47 @@ test("the merge drops placeholder lines and interleaves both sides by time", () 
     archiveHasMore: false,
   });
   assert.deepEqual(ids(merged), ["old", "mls-a", "mls-b"]);
+});
+
+test("a shared copy takes the place of a sealed row with the same id (GRYT-2139)", () => {
+  const merged = mergeTimeline({
+    server: [row("sealed", 1, { sealed: "{}", text: null }), row("plain", 2)],
+    serverHasMore: false,
+    archived: [row("sealed", 1, { mls: true, text: "readable" })],
+    archiveHasMore: false,
+  });
+  assert.deepEqual(merged.map((m) => m.text), ["readable", "plain"]);
+});
+
+test("your copy carries the old sealed messages this device opens, oldest first (GRYT-2139)", async () => {
+  const at = (minute: number) => new Date(Date.UTC(2026, 8, 25, 10, minute)).toISOString();
+  const pages = [
+    { items: [{ message_id: "s3", sender_server_id: "kari", created_at: at(3), sealed: "ok:three" }, { message_id: "p2", sender_server_id: "mia", created_at: at(2), text: "plain" }], hasMore: true },
+    { items: [{ message_id: "s1", sender_server_id: "kari", created_at: at(1), sealed: "ok:one", reply_to_message_id: "p0" }, { message_id: "bad", sender_server_id: "kari", created_at: at(0), sealed: "broken" }], hasMore: false },
+  ];
+  const befores: (string | undefined)[] = [];
+  const older = await openedSealedHistory(
+    async (before) => (befores.push(before), pages[befores.length - 1]),
+    async (sealed) => {
+      if (!sealed.startsWith("ok:")) throw new Error("won't open");
+      return { text: sealed.slice(3), attachments: {} };
+    },
+    async () => undefined,
+  );
+  assert.deepEqual(befores, [undefined, at(2)]);
+  assert.deepEqual(older.map((e) => [e.id, e.text, e.replyTo]), [["s3", "three", undefined], ["s1", "one", "p0"]]);
+
+  const sent: { entries: { id: string }[] }[] = [];
+  const archive = { page: async (_s: string, _c: string, o: { before?: { sentAt: number } }) => (o.before ? [] : [{ messageId: "s3", sentAt: Date.parse(at(3)), senderId: "kari", text: "from MLS", attachments: {} }]) };
+  const n = await shareHistory(
+    { storeScope: "scope", send: async (_c: string, _p: string, batch: { entries: { id: string }[] }) => void sent.push(batch) } as never,
+    archive as never,
+    "dm_1",
+    "mia",
+    older,
+  );
+  assert.equal(n, 2);
+  assert.deepEqual(sent.flatMap((b) => b.entries.map((e) => e.id)), ["s1", "s3"], "the archive's own copy of s3 wins, once");
 });
 
 test("the merge holds back what's older than the other side has loaded", () => {
@@ -126,30 +168,33 @@ test("the composer line: quiet when healthy, says why otherwise, and on the web 
   const none = { undecryptable: 0, lost: null };
   const app = { lostHistory: false, home: "app", peerName: "Mia" } as const;
   assert.equal(mlsNotice({ kind: "mls" }, none, app), null);
-  assert.match(mlsNotice({ kind: "mls" }, none, { ...app, peerKeyChanged: true }) ?? "", /Mia has a new key.*compare the pictures/);
+  assert.match(mlsNotice({ kind: "mls" }, none, { ...app, peerKeyChanged: true }) ?? "", /Mia has a new key.*compare codes with them/);
   assert.equal(mlsNotice({ kind: "sealed-v1", reason: "peer_without_mls" }, none, app), null);
   assert.match(mlsNotice({ kind: "refused", reason: "peer_left_mls" }, none, app) ?? "", /Mia/);
-  assert.equal(mlsNotice({ kind: "mls" }, { undecryptable: 1, lost: null }, app), "1 message couldn't be decrypted on this device.");
+  assert.equal(mlsNotice({ kind: "mls" }, { undecryptable: 1, lost: null }, app), "1 message couldn't be opened on this device. Mia has it and can send you a copy.");
   assert.match(mlsNotice({ kind: "mls" }, { undecryptable: 3, lost: null }, app) ?? "", /3 messages/);
   assert.match(mlsNotice({ kind: "mls" }, { undecryptable: 0, lost: "removed" }, app) ?? "", /taken out/);
   assert.match(mlsNotice({ kind: "mls" }, { undecryptable: 0, lost: "not_added" }, app) ?? "", /new to your chat with Mia.*waits and goes out on its own/);
-  assert.match(mlsNotice({ kind: "mls" }, { undecryptable: 0, lost: "other_identity" }, app) ?? "", /own encryption key on this server.*Link it/);
-  assert.match(mlsNotice({ kind: "mls" }, { undecryptable: 0, lost: "too_many_devices" }, app) ?? "", /most devices allowed.*Settings/);
+  assert.match(mlsNotice({ kind: "mls" }, { undecryptable: 0, lost: "other_identity" }, app) ?? "", /different key on this server than your account.*link this device/);
+  assert.match(mlsNotice({ kind: "mls" }, { undecryptable: 0, lost: "too_many_devices" }, app) ?? "", /most devices allowed.*no longer use/);
   const refused = { kind: "refused", reason: "no_own_device" } as const;
-  assert.match(mlsNotice(refused, { undecryptable: 0, lost: "too_many_devices" }, app) ?? "", /most devices allowed.*Settings/);
-  assert.match(mlsNotice(refused, { undecryptable: 0, lost: "other_identity" }, app) ?? "", /Link it/);
+  assert.match(mlsNotice(refused, { undecryptable: 0, lost: "too_many_devices" }, app) ?? "", /most devices allowed.*no longer use/);
+  assert.match(mlsNotice(refused, { undecryptable: 0, lost: "other_identity" }, app) ?? "", /link this device/);
   assert.match(mlsNotice(refused, none, app) ?? "", /isn't set up/);
-  assert.equal(mlsNotice({ kind: "mls" }, none, { ...app, lostHistory: true }), "Older messages were cleared from this device.");
+  assert.equal(mlsNotice({ kind: "mls" }, none, { ...app, lostHistory: true }), "Older messages were cleared from this device. Mia can send you a copy.");
   assert.match(mlsNotice({ kind: "mls" }, none, { ...app, home: "browser" }) ?? "", /this browser/);
   assert.equal(mlsNotice({ kind: "sealed-v1", reason: "peer_without_mls" }, none, { ...app, home: "browser" }), null);
 });
 
 test("a failed send names what somebody can do something about", () => {
-  assert.match(sendFailure({ code: "peer_unverified" }, "app"), /their card/);
+  assert.match(sendFailure({ code: "peer_unverified" }, "app"), /Compare codes with them/);
   assert.match(sendFailure({ code: "waiting_for_welcome" }, "browser"), /This browser/);
   assert.match(sendFailure({ code: "waiting_for_welcome" }, "app"), /still isn.t in this chat/);
   assert.match(sendFailure({ code: "other_identity" }, "browser"), /This browser needs to be linked/);
-  assert.equal(sendFailure(new Error("socket"), "app"), "Not sent.");
+  assert.equal(sendFailure(new Error("socket"), "app"), "Not sent. Something went wrong while encrypting it. It's back in the message box. Press Send to try again.");
+  assert.match(sendFailure({ code: "offline" }, "app"), /^Not sent\. The server didn't answer in time\. It's back in the message box/);
+  assert.match(sendFailure({ code: "unexpected_member" }, "app"), /key this device doesn't know.*restart Gryt\. It's back in the message box/);
+  assert.match(sendFailure({ code: "unexpected_member" }, "browser"), /key this browser doesn.t know.*reload the page/);
 });
 
 function memoryArchive() {

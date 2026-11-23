@@ -17,16 +17,6 @@ try {
   await web.goto(url);
   await expect(web.getByRole("heading", { name: "显示", exact: true })).toBeVisible();
   await expect(web.locator('[data-gryt="startup-window-settings"]')).toHaveCount(0);
-  const noise = web.locator('[data-call-control="noise-reduction"]');
-  await expect(noise).toHaveCount(2);
-  await expect(noise.first()).toHaveAttribute("aria-pressed", "true");
-  await noise.first().click();
-  await expect(noise.first()).toHaveAttribute("aria-pressed", "false");
-  await expect(noise.last()).toHaveAttribute("aria-pressed", "false");
-  await noise.last().click();
-  await expect(noise.first()).toHaveAttribute("aria-pressed", "true");
-  await expect(noise.last()).toHaveAttribute("aria-pressed", "true");
-  console.log("✓ 降噪：新版大通话栏与侧栏共享状态，大按钮关闭后可由小按钮重新开启");
   await web.close();
 
   const desktop = await browser.newPage({ viewport: { width: 800, height: 1000 } });

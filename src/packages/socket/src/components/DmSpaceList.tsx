@@ -1,9 +1,10 @@
-import { Avatar, ContextMenu } from "@gryt/ui";
+import { Avatar, ContextMenu, ConversationItem } from "@gryt/ui";
+import { BellSlash } from "@phosphor-icons/react";
 import { Reorder } from "motion/react";
+import { useSyncExternalStore } from "react";
 
-import { getOwnServerUserId, getUploadsFileUrl, resolveAvatarSrc } from "@/common";
+import { getOwnServerUserId, getUploadsFileUrl, isChannelMuted, NotificationLevelMenu, resolveAvatarSrc, subscribeToPrefs } from "@/common";
 
-import { PiPushPinFill } from "../../../../lib/icons";
 import type { DirectoryEntry } from "../hooks/dmDirectory";
 import { isPinned, pinFor, setPinned } from "../hooks/dmPins";
 import { type ConversationPreview, previewKey } from "../hooks/useConversationPreviews";
@@ -14,8 +15,6 @@ import type { UserStatus } from "../types/clients";
 import { EmojiText } from "./EmojiText";
 import { GroupFace } from "./GroupFace";
 import { MarkAsReadItem } from "./MarkAsReadItem";
-import { PresenceDot } from "./PresenceDot";
-import { UnreadIndicator } from "./UnreadIndicator";
 
 type ConversationParticipant = DirectConversation["other"];
 
@@ -36,14 +35,12 @@ function when(iso: string | null): string {
 }
 
 function ConversationRow({
-  entry, serverName, unread, selected, hidden, otherStatus, self, clash, pinned, preview, onOpen, onHide, onShow,
+  entry, serverName, unread, selected, otherStatus, self, clash, pinned, preview, onOpen, onHide,
 }: {
   entry: DirectoryEntry;
   serverName: string;
   unread: number;
   selected: boolean;
-  /** Drawn back and named as hidden. It still opens and reads normally. */
-  hidden?: boolean;
   /** The other party's presence, 1:1 conversations only. Undefined is "no data",
       never drawn as offline (GRYT-1467). */
   otherStatus?: UserStatus;
@@ -55,42 +52,44 @@ function ConversationRow({
   preview?: ConversationPreview;
   onOpen: () => void;
   onHide?: () => void;
-  onShow?: () => void;
 }) {
   const { host, conversation } = entry;
   const title = conversationTitle(conversation);
   const isGroup = conversation.kind === "group";
-  const unselectedMuted = unread > 0 ? "var(--gryt-neutral-11)" : "var(--gryt-neutral-10)";
-  const muted = selected ? "color-mix(in oklch, var(--color-gryt-on-accent) 70%, transparent)" : unselectedMuted;
-  const rowBg = selected ? "var(--gryt-accent)" : "var(--gryt-neutral-2)";
+  const groupSize = isGroup ? `${conversation.members.length + 1} people` : undefined;
+  const subtitle = preview ? <EmojiText text={preview.text} /> : groupSize;
+  // Muted draws no badge and no bold, like a muted channel, and says so with a bell.
+  const mutedNow = () => isChannelMuted(host, conversation.conversation_id);
+  const muted = useSyncExternalStore(subscribeToPrefs, mutedNow, mutedNow);
 
   return (
     <ContextMenu.Root>
       <ContextMenu.Trigger>
-        <button
-          type="button"
+        <ConversationItem
           data-gryt="dm-row"
           data-selected={selected || undefined}
-          /* Named rather than dimmed for a screen reader, which has no opacity. */
-          aria-label={hidden ? `${title}, hidden` : undefined}
-          aria-current={selected ? "true" : undefined}
           onClick={onOpen}
-          className={[
-            "flex w-full items-center rounded-(--gryt-radius-lg) text-left transition-colors",
-            "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gryt-accent-light",
-            selected ? "" : "hover:bg-gryt-neutral-3 active:bg-gryt-neutral-4",
-          ].join(" ")}
-          style={{
-            gap: 12, padding: "10px 12px", border: 0, cursor: "pointer",
-            background: selected ? "var(--gryt-accent)" : undefined,
-            color: selected ? "var(--color-gryt-on-accent)" : "var(--gryt-text)",
-            ...(hidden && !selected ? { opacity: 0.55 } : {}),
-          }}
-        >
-          {isGroup ? (
-            <GroupFace host={host} conversation={conversation} self={self} size={40} />
-          ) : (
-            <span className="relative inline-flex shrink-0">
+          active={selected}
+          pinned={pinned}
+          unread={muted ? 0 : unread}
+          presence={isGroup ? undefined : otherStatus}
+          note={clash ? serverName : undefined}
+          meta={
+            muted ? (
+              <span className="inline-flex items-center gap-1">
+                <BellSlash weight="fill" size={12} aria-label="Muted" />
+                {when(conversation.last_message_at)}
+              </span>
+            ) : (
+              when(conversation.last_message_at)
+            )
+          }
+          title={<EmojiText text={title} />}
+          subtitle={subtitle}
+          avatar={
+            isGroup ? (
+              <GroupFace host={host} conversation={conversation} self={self} size={40} />
+            ) : (
               <Avatar
                 size="medium"
                 fallback={conversation.other.nickname[0]}
@@ -102,49 +101,9 @@ function ConversationRow({
                   conversation.other.avatar_worn,
                 )}
               />
-              {/* Bottom-right, cut out of the face by the row's own colour. Absent
-                  rather than grey when there is no data to show (GRYT-1467). */}
-              {otherStatus && (
-                <span
-                  className="absolute rounded-(--gryt-radius-full)"
-                  style={{ bottom: -1, right: -1, padding: 3, background: rowBg }}
-                >
-                  <PresenceDot status={otherStatus} size={10} />
-                </span>
-              )}
-            </span>
-          )}
-
-          <span className="flex min-w-0 flex-1 flex-col" style={{ gap: 2 }}>
-            <span className="flex items-center" style={{ gap: 6 }}>
-              <span
-                className="truncate"
-                style={{ fontSize: 15, fontWeight: unread > 0 ? 700 : 500 }}
-              >
-                <EmojiText text={title} />
-              </span>
-              {clash && (
-                <span className="shrink-0 whitespace-nowrap" style={{ fontSize: 12, color: muted }}>
-                  · {serverName}
-                </span>
-              )}
-              <span
-                className="ml-auto flex shrink-0 items-center"
-                style={{ gap: 4, fontSize: 12, color: muted, fontVariantNumeric: "tabular-nums" }}
-              >
-                {pinned && <PiPushPinFill size={12} aria-label="Pinned" />}
-                {when(conversation.last_message_at)}
-              </span>
-            </span>
-            <span className="flex items-center" style={{ gap: 8 }}>
-              <span className="truncate" style={{ flex: 1, fontSize: 13, color: muted }}>
-                {preview && <EmojiText text={preview.text} />}
-                {!preview && (isGroup ? `${conversation.members.length + 1} people` : " ")}
-              </span>
-              <UnreadIndicator unread={unread} />
-            </span>
-          </span>
-        </button>
+            )
+          }
+        />
       </ContextMenu.Trigger>
 
       <ContextMenu.Portal>
@@ -160,12 +119,7 @@ function ConversationRow({
               host={host}
               scope={{ kind: "conversation", id: conversation.conversation_id }}
             />
-            {onShow && (
-              <>
-                <ContextMenu.Separator />
-                <ContextMenu.Item onClick={onShow}>Show in list</ContextMenu.Item>
-              </>
-            )}
+            <NotificationLevelMenu host={host} scope={{ kind: "channel", id: conversation.conversation_id }} />
             {onHide && (
               <>
                 <ContextMenu.Separator />
@@ -175,7 +129,7 @@ function ConversationRow({
                     {/* Two things people assume it does and it doesn't: leave,
                         and follow you to your other devices. */}
                     <span className="text-xs text-gryt-muted">
-                      Only on this device. Comes back if they write.
+                      Only on this device. Comes back when either of you writes.
                     </span>
                   </div>
                 </ContextMenu.Item>
@@ -189,18 +143,14 @@ function ConversationRow({
 }
 
 export function DmSpaceList({
-  entries, selected, unreadFor, onOpen, onHide, onShow, hidden = false, previews, clashes, reorder,
+  entries, selected, unreadFor, onOpen, onHide, previews, clashes, reorder,
 }: {
   entries: DirectoryEntry[];
   selected: { host: string; conversationId: string } | null;
   unreadFor: (host: string, conversationId: string) => number;
   onOpen: (host: string, conversation: DirectConversation) => void;
-  /** Take it out of this device's list. Absent on the hidden rows. */
+  /** Take it out of this device's list. */
   onHide?: (entry: DirectoryEntry) => void;
-  /** Put it back. Only passed for the hidden rows. */
-  onShow?: (entry: DirectoryEntry) => void;
-  /** Whether these are the hidden ones, which are drawn back. */
-  hidden?: boolean;
   previews: ReadonlyMap<string, ConversationPreview>;
   /** Names that appear on more than one row, across every list. */
   clashes: ReadonlySet<string>;
@@ -222,7 +172,6 @@ export function DmSpaceList({
           selected?.host === entry.host &&
           selected?.conversationId === entry.conversation.conversation_id
         }
-        hidden={hidden}
         /* Same member list the sidebar reads presence off; a member it hides
            from this viewer never has an entry to find (GRYT-1467). */
         otherStatus={
@@ -238,7 +187,6 @@ export function DmSpaceList({
         preview={previews.get(previewKey(entry.host, entry.conversation.conversation_id))}
         onOpen={() => onOpen(entry.host, entry.conversation)}
         onHide={onHide ? () => onHide(entry) : undefined}
-        onShow={onShow ? () => onShow(entry) : undefined}
       />
     );
   };

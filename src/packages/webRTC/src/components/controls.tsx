@@ -1,4 +1,4 @@
-import { IconButton, Tooltip } from "@gryt/ui";
+import { BAR_BUTTON_STYLE, BAR_SOLO_CLASS, CallControlButton, controlState, IconButton, LEAVE_CLASS, SPLIT_BUTTON_CLASS, SplitControl, Tooltip } from "@gryt/ui";
 import { getIsBrowserSupported, SFUConnectionState, useCamera, useScreenShare } from "@gryt/voice";
 import { useSFU } from "@gryt/voice";
 import { voiceLog } from "@gryt/voice";
@@ -21,12 +21,9 @@ import { useVoiceSounds } from "../adapters/useVoiceSounds";
 import { attachEncodedTransform, type EncodedTransformHandle, isEncodedTransformSupported } from "../utils/encodedTransform";
 import { senderStreamId } from "../utils/senderStreamIds";
 import { liftScreenCapture, screenSendSettings } from "../utils/streamQuality";
-import { BAR_BUTTON_STYLE, BAR_SOLO_CLASS, CallControlButton, LEAVE_CLASS, SPLIT_BUTTON_CLASS, SplitControl } from "./CallControlButton";
 import { CameraControl } from "./CameraControl";
-import { controlState } from "./controlState";
 import { HeadsetMenu } from "./HeadsetMenu";
 import { MicMenu } from "./MicMenu";
-import { NoiseReductionControl } from "./NoiseReductionControl";
 import { ScreenAudioSourcesModal } from "./ScreenAudioSourcesModal";
 import { ScreenShareControl } from "./ScreenShareControl";
 
@@ -76,6 +73,7 @@ export function Controls({ onDisconnect }: ControlsProps) {
     getPeerConnection,
     getScreenVideoSender,
     setVideoSendSettings,
+    setVideoCeiling,
   } = useSFU();
   const { playDisconnect } = useVoiceSounds();
   const { cameraStream, cameraEnabled, setCameraEnabled } = useCamera();
@@ -88,7 +86,15 @@ export function Controls({ onDisconnect }: ControlsProps) {
   const [showAudioSourcesModal, setShowAudioSourcesModal] = useState(false);
   const [micMenuOpen, setMicMenuOpen] = useState(false);
   const [headsetMenuOpen, setHeadsetMenuOpen] = useState(false);
-  const { sockets } = useSockets();
+  const { sockets, serverDetailsList } = useSockets();
+  // A Gryt Cloud plan's ceiling for the server this call is on; the engine holds every send to it.
+  const videoMax = currentServerConnected ? serverDetailsList[currentServerConnected]?.server_info?.video_max ?? null : null;
+  const maxHeight = videoMax?.maxHeight;
+  const maxFps = videoMax?.maxFps;
+  const maxKbps = videoMax?.maxKbps;
+  useEffect(() => {
+    setVideoCeiling?.(maxHeight && maxFps && maxKbps ? { maxHeight, maxFps, maxKbps } : null);
+  }, [maxHeight, maxFps, maxKbps, setVideoCeiling]);
   const {
     setIsMuted, isMuted, isDeafened, setIsDeafened,
     isServerMuted, isServerDeafened,
@@ -167,19 +173,6 @@ export function Controls({ onDisconnect }: ControlsProps) {
         // Kept after the share stops: the engine pauses this sender rather than removing it.
         webrtcScreenVideoStreamId.current = senderStreamId(getPeerConnectionRef.current?.(), "screenVideo", screenVideoStream.id);
         prevScreenVideoRef.current = screenVideoStream;
-
-        const quality = screenShareQuality;
-        const fps = screenShareFps;
-        const settings = screenSendSettings({
-          quality, fps, gamingMode: screenShareGamingMode, codec: screenShareCodec,
-          maxBitrate: screenShareMaxBitrate, scalabilityMode: screenShareScalabilityMode,
-          nativeH264: nativeEncodedCodec === "h264",
-        });
-        voiceLog.info("SCREEN", `settings: maxBitrate=${settings.maxBitrate} maxFramerate=${fps} ceiling=${quality} scalabilityMode=${settings.scalabilityMode ?? "none"} degradationPreference=${settings.degradationPreference}`);
-        // In order, so a quick second pick can't land before the first.
-        screenLiftChain.current = screenLiftChain.current
-          .then(() => liftScreenCapture(videoTrack, quality, fps))
-          .then(() => setVideoSendSettingsRef.current?.("screen", settings));
       }
     } else if (prevScreenVideoRef.current) {
       voiceLog.info("SCREEN", `controls: removing video track, prevStream=${prevScreenVideoRef.current.id}`);
@@ -187,7 +180,27 @@ export function Controls({ onDisconnect }: ControlsProps) {
       setVideoSendSettingsRef.current?.("screen", null);
       prevScreenVideoRef.current = null;
     }
-  }, [screenShareActive, screenVideoStream, isConnected, addScreenVideoTrack, removeScreenVideoTrack, screenShareQuality, screenShareFps, screenShareGamingMode, screenShareCodec, screenShareMaxBitrate, screenShareScalabilityMode, nativeEncodedCodec]);
+  }, [screenShareActive, screenVideoStream, isConnected, addScreenVideoTrack, removeScreenVideoTrack, screenShareCodec]);
+
+  // The picker's preset for window 1 lives in shareMeta; the settings are only the default.
+  const firstPreset = shareMeta(firstShareKey());
+  const screenQuality = firstPreset?.quality ?? screenShareQuality;
+  const screenFps = firstPreset?.fps ?? screenShareFps;
+  useEffect(() => {
+    if (!isConnected || !screenShareActive) return;
+    const videoTrack = screenVideoStream?.getVideoTracks()[0];
+    if (!videoTrack) return;
+    const settings = screenSendSettings({
+      quality: screenQuality, fps: screenFps, gamingMode: screenShareGamingMode, codec: screenShareCodec,
+      maxBitrate: screenShareMaxBitrate, scalabilityMode: screenShareScalabilityMode,
+      nativeH264: nativeEncodedCodec === "h264",
+    });
+    voiceLog.info("SCREEN", `settings: maxBitrate=${settings.maxBitrate} maxFramerate=${screenFps} ceiling=${screenQuality} scalabilityMode=${settings.scalabilityMode ?? "none"} degradationPreference=${settings.degradationPreference}`);
+    // In order, so a quick second pick can't land before the first.
+    screenLiftChain.current = screenLiftChain.current
+      .then(() => liftScreenCapture(videoTrack, screenQuality, screenFps))
+      .then(() => setVideoSendSettingsRef.current?.("screen", settings));
+  }, [isConnected, screenShareActive, screenVideoStream, screenQuality, screenFps, screenShareGamingMode, screenShareCodec, screenShareMaxBitrate, screenShareScalabilityMode, nativeEncodedCodec]);
 
   // Attach Encoded Transform when native H.264 encoding is active: injects
   // pre-encoded NALs, bypassing the browser's decode-re-encode cycle.
@@ -479,8 +492,6 @@ export function Controls({ onDisconnect }: ControlsProps) {
               </CallControlButton>
             </MaybeTooltip>
           </SplitControl>
-
-          <NoiseReductionControl size={BAR_SIZE} style={BAR_BUTTON_STYLE} idleClassName={BAR_SOLO_CLASS} iconSize={BAR_ICON} />
 
           <CameraControl split size={BAR_SIZE} iconSize={BAR_ICON} allowed={canIn(currentChannelConnected, "share_video")} />
 

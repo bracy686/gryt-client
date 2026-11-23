@@ -1,4 +1,4 @@
-import { Alert, Avatar, Button, Chip, Dialog, IconButton, Skeleton, Surface, TextField } from "@gryt/ui";
+import { Alert, Avatar, Button, Chip, Dialog, IconButton, Skeleton, Spinner, Surface, TextField } from "@gryt/ui";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -10,18 +10,25 @@ import {
   useAccount,
 } from "@/common";
 
+import { CheerOwl } from "../../../../components/cheerOwl";
+import { Confetti } from "../../../../components/confetti";
+import { CLOUD_CONSOLE_URL, cloudEnabled } from "../../../../lib/cloud";
 import {
   PiArrowSquareOutBold,
   PiCaretRightBold,
   PiCloudFill,
-  PiHouseLineFill,
+  PiHandWavingFill,
   PiInfoFill,
-  PiLinkSimpleBold,
+  PiMonitorFill,
+  PiSignInFill,
+  PiSparkleFill,
   PiUsersThreeFill,
   PiWarningFill,
   PiX,
 } from "../../../../lib/icons";
 import { useServerManagement } from "../../../socket/src/hooks/useServerManagement";
+import { markCloudWelcome } from "../../../socket/src/lib/cloudWelcomeFlag";
+import { cloudWait } from "../cloudWait";
 import { useEmbeddedServer } from "../hooks/useEmbeddedServer";
 import { useLanDiscovery } from "../hooks/useLanDiscovery";
 import {
@@ -39,10 +46,11 @@ import { CreateServerPanel } from "./createServer";
 
 const CLOUD_URL = "https://gryt.chat/cloud";
 
-const STEP_TITLE = { host: "Create your server", join: "Join a server", choose: "Add a server" };
+const STEP_TITLE = { host: "Create your server", join: "Join a server", create: "Create a server", choose: "Add a server" };
 
-function stepDescription(step: "host" | "join" | null, isElectron: boolean): string {
+function stepDescription(step: "host" | "join" | "create" | null, isElectron: boolean): string {
   if (step === "host") return "It runs on this machine, and your friends connect to you.";
+  if (step === "create") return "Run it yourself, or let us run it for you.";
   if (step !== "join") return "Start one of your own, or join somebody else's.";
   return isElectron
     ? "Paste the invite a friend sent you, or the address of a server you already know."
@@ -131,7 +139,9 @@ export function AddNewServer({
 
   /** Null means unchosen. A browser has no embedded server, so offering the
       choice there is one real option and one dead end. */
-  const [mode, setMode] = useState<"host" | "join" | null>(null);
+  const [mode, setMode] = useState<"host" | "join" | "create" | null>(null);
+  /** 1.2 while the checkout runs in the browser, then 1.3 with the new server's address. */
+  const [cloud, setCloud] = useState<null | "waiting" | { host: string }>(null);
   const step = embeddedServerAvailable ? mode : "join";
 
   /** Exactly what was pasted, before anything is read out of it. */
@@ -198,8 +208,24 @@ export function AddNewServer({
     if (isJoining) return;
 
     setMode(null);
+    setCloud(null);
     resetJoinState();
     setShowAddServer(false);
+  }
+
+  useEffect(() => {
+    if (cloud !== "waiting") return;
+    cloudWait.start((host) => {
+      markCloudWelcome(host);
+      setCloud({ host });
+      setInviteInput(host);
+    });
+    return () => cloudWait.stop();
+  }, [cloud]);
+
+  function startCloud() {
+    window.open(CLOUD_CONSOLE_URL, "_blank", "noopener,noreferrer");
+    setCloud("waiting");
   }
 
   /** The lookup owns everything downstream, so this clears it too: a preview left
@@ -245,6 +271,7 @@ export function AddNewServer({
   useEffect(() => {
     if (showAddServer) return;
     setMode(null);
+    setCloud(null);
     resetJoinState();
   }, [showAddServer]);
 
@@ -381,12 +408,14 @@ export function AddNewServer({
                 the gap under the title came from. */}
             <div className="flex flex-col gap-1 items-center">
               <Dialog.Title className="m-0 text-xl font-bold">
-                {STEP_TITLE[step ?? "choose"]}
+                {cloud ? STEP_TITLE.choose : STEP_TITLE[step ?? "choose"]}
               </Dialog.Title>
 
-              <Dialog.Description className="m-0 text-center text-sm">
-                {stepDescription(step, isElectron)}
-              </Dialog.Description>
+              {step !== null && !cloud && (
+                <Dialog.Description className="m-0 text-center text-sm">
+                  {stepDescription(step, isElectron)}
+                </Dialog.Description>
+              )}
             </div>
 
             {/* Two doors of equal weight (GRYT-894).
@@ -398,37 +427,54 @@ export function AddNewServer({
                 Only the desktop app reaches this screen. `step` sends a browser
                 straight to Join, because there is no embedded server to create
                 with and a door onto a dead end is worse than no door. */}
-            {step === null && (
+            {cloud === "waiting" && (
               <div className="flex flex-col gap-4 mt-2">
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <EntryCard
-                    tour="choose-host"
-                    icon={<PiHouseLineFill size={17} />}
-                    name={hasOwnServer ? "Create another" : "Create my own"}
-                    hint="Runs on this machine. Best for a few friends."
-                    onPick={() => setMode("host")}
-                  />
-                  <EntryCard
-                    tour="choose-join"
-                    icon={<PiLinkSimpleBold size={17} />}
-                    name="Join with an invite"
-                    hint="Paste a link or an address you were given."
-                    onPick={() => setMode("join")}
-                  />
+                <div className="flex flex-col items-center gap-3 py-5">
+                  <Spinner size={40} />
+                  <span className="text-base font-bold">Continue in your browser</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button size="large" tone="ghost" onClick={() => setCloud(null)}>
+                    Cancel
+                  </Button>
+                  <Button size="large" tone="neutral" onClick={() => window.open(CLOUD_CONSOLE_URL, "_blank", "noopener,noreferrer")}>
+                    Open browser again
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {cloud && cloud !== "waiting" && (
+              <div className="flex flex-col gap-4 mt-2">
+                <div className="flex flex-col items-center gap-3 py-5 text-center">
+                  <span className="relative flex">
+                    <Confetti />
+                    <Avatar size="large" className="size-14 rounded-(--gryt-radius-lg)" src={serverInfo ? `${getServerHttpBase(cloud.host)}/icon` : undefined} fallback={<GeneratedServerIcon seed={serverInfo?.name ?? cloud.host} />} />
+                  </span>
+                  <span className="text-xl font-bold">{serverInfo?.name ?? cloud.host} is live! 🎉</span>
+                  <span className="inline-flex items-center gap-1.5 text-sm" style={{ color: "var(--gryt-neutral-11)" }}>
+                    Thanks for running it on Gryt Cloud <CheerOwl size={30} still />
+                  </span>
+                </div>
+                <Button size="large" onClick={() => void handleJoin()}>
+                  Connect to {serverInfo?.name ?? cloud.host}
+                </Button>
+              </div>
+            )}
+
+            {step === null && !cloud && (
+              <div className="flex flex-col gap-4 mt-2">
+                <div className="flex flex-col gap-3">
+                  <DoorRow tour="choose-join" icon={<PiSignInFill size={18} />} name="Join" hint="You have an invite" onPick={() => setMode("join")} />
+                  <DoorRow tour="choose-create" icon={<PiSparkleFill size={18} />} name="Create" hint="Start your own" onPick={() => setMode("create")} />
                 </div>
 
-                <CloudCard hint="Your own server, always online. We run it for you, so your friends can hang out even when you're not on." />
-
-                {/* Below a rule rather than between the two doors. The server we
-                    run is a third answer, not a step inside the first one. */}
                 {showOfficial && officialServer && (
                   <>
                     <OrRule />
-                    <OfficialServerOffer
-                      server={officialServer}
-                      onPick={() => pickOfficialServer(officialServer.host)}
-                      onHide={() => setOfficialServerHidden(true)}
-                    />
+                    <div data-tour="official-server" className="flex justify-center">
+                      <CommunityChip onPick={() => pickOfficialServer(officialServer.host)} />
+                    </div>
                   </>
                 )}
 
@@ -452,6 +498,26 @@ export function AddNewServer({
                     </button>
                   </span>
                 )}
+              </div>
+            )}
+
+            {step === "create" && !cloud && (
+              <div className="flex flex-col gap-3 mt-2">
+                <EntryCard
+                  tour="choose-host"
+                  icon={<PiMonitorFill size={17} />}
+                  name="On this computer"
+                  hint="Free. Online while this computer is on."
+                  onPick={() => setMode("host")}
+                />
+                {cloudEnabled ? (
+                  <EntryCard tour="choose-cloud" icon={<PiCloudFill size={17} />} name="Gryt Cloud" hint="From €4 a month. Always online." external accent onPick={startCloud} />
+                ) : (
+                  <EntryCard tour="choose-cloud" icon={<PiCloudFill size={17} />} name="Gryt Cloud" hint="Coming soon. Always online." external onPick={() => window.open(CLOUD_URL, "_blank", "noopener,noreferrer")} />
+                )}
+                <Button tone="ghost" onClick={() => setMode(null)}>
+                  Back
+                </Button>
               </div>
             )}
 
@@ -695,12 +761,16 @@ function EntryCard({
   hint,
   onPick,
   tour,
+  external,
+  accent,
 }: {
   icon: React.ReactNode;
   name: string;
   hint: string;
   onPick: () => void;
   tour: string;
+  external?: boolean;
+  accent?: boolean;
 }) {
   return (
     <button
@@ -708,8 +778,9 @@ function EntryCard({
       data-tour={tour}
       onClick={onPick}
       className="flex flex-col gap-2 rounded-(--gryt-radius-md) border border-gryt-border bg-gryt-surface text-gryt-text w-full cursor-pointer p-4 text-left transition-colors hover:border-(--gryt-accent-9)"
-      style={{ minWidth: 0 }}
+      style={{ minWidth: 0, ...(accent ? { background: "var(--gryt-accent-a2)", borderColor: "var(--gryt-accent-7)" } : {}) }}
     >
+      <span className="flex items-start justify-between">
       <span
         className="flex items-center justify-center"
         style={{
@@ -722,6 +793,8 @@ function EntryCard({
         }}
       >
         {icon}
+      </span>
+      {external && <PiArrowSquareOutBold size={14} style={{ color: "var(--gryt-neutral-11)" }} aria-label="Opens in your browser" />}
       </span>
       <span className="text-sm font-bold">{name}</span>
       <span className="text-xs" style={{ color: "var(--gryt-neutral-11)" }}>
@@ -766,6 +839,47 @@ function CloudCard({ hint }: { hint: string }) {
       </span>
       <PiArrowSquareOutBold size={14} style={{ color: "var(--gryt-neutral-11)", flexShrink: 0 }} aria-label="Opens in your browser" />
     </a>
+  );
+}
+
+/** One of the dialog's first two answers: a full-width row with a line saying what it's for. */
+function DoorRow({ icon, name, hint, onPick, tour }: { icon: React.ReactNode; name: string; hint: string; onPick: () => void; tour: string }) {
+  return (
+    <button
+      type="button"
+      data-tour={tour}
+      onClick={onPick}
+      className="flex w-full cursor-pointer items-center gap-4 rounded-(--gryt-radius-lg) p-4 text-left"
+      style={{ border: "1px solid var(--gryt-border)", background: "var(--gryt-surface-raised, var(--gryt-neutral-2))", color: "var(--gryt-text)" }}
+    >
+      <span className="flex items-center justify-center" style={{ width: 44, height: 44, borderRadius: 14, background: "var(--gryt-accent-a3)", color: "var(--gryt-accent-11)", flexShrink: 0 }}>
+        {icon}
+      </span>
+      <span className="flex flex-col min-w-0">
+        <span className="text-base font-bold">{name}</span>
+        <span className="text-sm" style={{ color: "var(--gryt-neutral-11)" }}>{hint}</span>
+      </span>
+      <span className="flex ml-auto" style={{ color: "var(--gryt-neutral-11)" }}>
+        <PiCaretRightBold size={14} />
+      </span>
+    </button>
+  );
+}
+
+/** The server we run, as one small line rather than a card competing with Join and Create. */
+function CommunityChip({ onPick }: { onPick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onPick}
+      className="inline-flex cursor-pointer items-center gap-2 rounded-full py-1.5 pr-3.5 pl-1.5 text-sm"
+      style={{ border: 0, background: "var(--gryt-surface-hover, var(--gryt-neutral-4))", color: "var(--gryt-text)" }}
+    >
+      <span className="flex items-center justify-center rounded-full" style={{ width: 26, height: 26, background: "var(--gryt-accent-a3)", color: "var(--gryt-accent-11)" }}>
+        <PiHandWavingFill size={14} />
+      </span>
+      Come say hi in our community server 👋
+    </button>
   );
 }
 

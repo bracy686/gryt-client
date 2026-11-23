@@ -155,9 +155,9 @@ test("Discord import receipts translate both file counts", () => {
 });
 
 test("sending a history copy has no English plural suffix", () => {
-  const out = actualTemplate("src/packages/socket/src/components/MemberIdentityCard.tsx", "your copy:");
+  const out = actualTemplate("src/packages/socket/src/components/CompareCodesDialog.tsx", "your copy:");
   for (const sent of [1, 2]) {
-    assert.equal(evaluate(out, ["member", "sent"], [{ nickname: "Alice" }, sent]),
+    assert.equal(evaluate(out, ["peerName", "sent"], ["Alice", sent]),
       "已向 Alice 发送你的副本：" + sent + " 条消息");
   }
 });

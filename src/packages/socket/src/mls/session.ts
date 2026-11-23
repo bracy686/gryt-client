@@ -51,6 +51,8 @@ export interface ConversationProblems {
   /** This device is out of the group and can't read new messages until it's back. `device_removed`
       means out of every group on this server, since the server removed the device (GRYT-1555). */
   lost: "removed" | "out_of_sync" | "gap" | "not_added" | "other_identity" | "too_many_devices" | "device_removed" | null;
+  /** Someone sent their copy of this DM, so what this device was missing is filled in. */
+  copyArrived?: boolean;
 }
 
 const NO_PROBLEMS: ConversationProblems = { undecryptable: 0, lost: null };
@@ -103,6 +105,8 @@ export interface MlsSession {
   modeFor(conversationId: string, peer: string): Promise<DmSealingMode>;
   /** Sends and keeps this device's copy. One at a time per conversation. */
   send(conversationId: string, peer: string, content: MlsDmContent): Promise<void>;
+  /** The other person in a DM, or null when this device doesn't know who that is. */
+  peerOf(conversationId: string): Promise<string | null>;
   /** Who is in which DM, newest first, from `dm:list` and `dm:opened`. */
   noteConversations(conversations: { conversation_id: string; members: { server_user_id: string }[] }[]): void;
   problems(conversationId: string): ConversationProblems;
@@ -255,6 +259,7 @@ export function createMlsSession(options: MlsSessionOptions): MlsSession {
       return;
     }
     await applyMlsContent(messages, { scope: storeScope, conversationId, senderId, senderDeviceId, content: opened, at });
+    if (opened.type === "history") setProblems(conversationId, { undecryptable: 0, copyArrived: true });
   };
 
   const driver: MlsDmDriver = createMlsDmDriver({
@@ -356,6 +361,9 @@ export function createMlsSession(options: MlsSessionOptions): MlsSession {
     start,
     modeFor: (conversationId, peer) => driver.modeFor(conversationId, peer),
 
+    async peerOf(conversationId) {
+      return (await membersOf(conversationId)).find((id) => id !== self) ?? null;
+    },
     send(conversationId, peer, content) {
       if (disposed) return Promise.reject(new Error("This connection has closed."));
       const previous = sending.get(conversationId) ?? Promise.resolve();

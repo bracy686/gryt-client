@@ -124,10 +124,24 @@ export type serverDetails = {
     uploads_checked?: boolean;
     /** Takes polls (GRYT-1732). Older servers leave it out. */
     polls?: boolean;
+    /** Has the Discord bridge routes, so the owner gets the Discord tab. */
+    discord_bridge?: boolean;
+    /** Whether the owner still gets the Discord offer: nothing linked and no messages yet. */
+    discord_offer?: boolean;
+    /** The bridge bot is in its Discord server, so Link Discord can work. */
+    discord_live?: boolean;
     /** Video avatars and banners are taken here: the host can and the owner allows it. */
     video_profiles?: boolean;
     /** Messages here may show other Gryt servers' custom emoji. */
     external_emojis?: boolean;
+    /** A Gryt Cloud plan's video ceiling; null or absent is none. */
+    video_max?: { maxHeight: number; maxFps: number; maxKbps: number } | null;
+    /** "read_only" or "paused" on a Gryt Cloud server whose payment failed. */
+    plan_mode?: "active" | "read_only" | "paused";
+    /** When a failed Gryt Cloud payment makes it read-only, pauses it and deletes it (ms). Absent until the server reports them. */
+    plan_read_only_at?: number;
+    plan_paused_at?: number;
+    plan_deleted_at?: number;
     version?: string;
     /**
      * Every plugin this server is running, and what each may do. All of them — an

@@ -1,5 +1,5 @@
 import { useSFU } from "@gryt/voice";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useGlobalHotkeys } from "@/audio";
 import {
@@ -18,7 +18,7 @@ import {
   useSettings,
   useSettingsShortcut,
 } from "@/settings";
-import { type JoinOutcome, useServerJoin } from "@/settings/src/hooks/useServerJoin";
+import { fetchServerInfo, type JoinOutcome, useServerJoin } from "@/settings/src/hooks/useServerJoin";
 import {
   DeviceSwitchModal,
   InviteAcceptModal,
@@ -30,15 +30,12 @@ import type { InviteJoinRequest } from "@/socket/src/components/InviteAcceptModa
 import { useVoiceSounds } from "@/webRTC";
 
 import { ApproveDeviceDialog } from "./components/approveDevice";
-import { ApproveThisDevice } from "./components/approveThisDevice";
 import { AuthLoadingOverlay } from "./components/AuthLoadingOverlay";
 import { CallStatsRecorder } from "./components/callStatsRecorder";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { GameDetectPrompt } from "./components/gameDetectPrompt";
 import { GlobalLightbox } from "./components/GlobalLightbox";
-import { HandoverRequestDialog } from "./components/handoverRequestDialog";
 import { IdentityClaimPrompt } from "./components/identityClaimPrompt";
-import { KeyResetDialog } from "./components/keyResetDialog";
 import { LeaveServer } from "./components/leaveServer";
 import { LinkDeviceDialog } from "./components/linkDevice";
 import { MainApp } from "./components/mainApp";
@@ -53,6 +50,9 @@ import { VaultUpgradePrompt } from "./components/vaultUpgradePrompt";
 import { VideoDebugOverlay } from "./components/videoDebugOverlay";
 import { Welcome } from "./components/welcome";
 import { offerSharedLook } from "./lib/sharedLook";
+import { useCloudServerSync } from "./lib/useCloudServerSync";
+import { cloudWait } from "./packages/settings/src/cloudWait";
+import { markCloudWelcome } from "./packages/socket/src/lib/cloudWelcomeFlag";
 
 export function App() {
   const { isSignedIn, login, loginInProgress } = useAccount();
@@ -66,6 +66,7 @@ export function App() {
   const { join } = useServerJoin();
 
   useSettingsShortcut();
+  useCloudServerSync();
   const { disconnect } = useSFU();
   const { playDisconnect } = useVoiceSounds();
 
@@ -94,9 +95,19 @@ export function App() {
     });
   }, [openSettings]);
 
+  // Read through a ref, since the deep-link listener is registered once.
+  const openKnown = useRef({ hasServer, switchToServer });
+  useEffect(() => {
+    openKnown.current = { hasServer, switchToServer };
+  }, [hasServer, switchToServer]);
+
   // Listen for invite deep links from the Electron main process (gryt://invite?...).
   useEffect(() => {
-    return window.electronAPI?.onDeepLinkInvite(({ host, code }) => {
+    return window.electronAPI?.onDeepLinkInvite(({ host, code, welcome }) => {
+      if (welcome) markCloudWelcome(host);
+      if (cloudWait.take(host)) return;
+      // A server this device already has opens, rather than offering to join it again.
+      if (openKnown.current.hasServer(normalizeHost(host))) return openKnown.current.switchToServer(normalizeHost(host));
       const pending = writePendingInvite(host, code);
       if (pending) setPendingInvite(pending);
     });
@@ -108,6 +119,12 @@ export function App() {
     if (!ready) return;
     const pending = readPendingInvite();
     if (!pending) return;
+    const host = normalizeHost(pending.host);
+    if (openKnown.current.hasServer(host)) {
+      clearPendingInvite();
+      openKnown.current.switchToServer(host);
+      return;
+    }
     setPendingInvite(pending);
   }, [ready]);
 
@@ -128,6 +145,20 @@ export function App() {
   );
 
   const alreadyMember = pendingInvite ? hasServer(normalizeHost(pendingInvite.host)) : false;
+
+  // A link with no code, signed in: try the join first, so an owner or an open server never sees the dialog.
+  const [tryingHost, setTryingHost] = useState<string | null>(null);
+  useEffect(() => {
+    if (!pendingInvite || pendingInvite.code || !isSignedIn || alreadyMember) return;
+    const host = pendingInvite.host;
+    setTryingHost(host);
+    void (async () => {
+      const info = await fetchServerInfo(host);
+      const outcome = info.kind === "info" ? await join({ host, info: info.info }) : null;
+      if (outcome?.ok) forgetInvite();
+      setTryingHost(null);
+    })();
+  }, [pendingInvite, isSignedIn, alreadyMember, join, forgetInvite]);
 
   const handleGoToServer = useCallback(() => {
     if (!pendingInvite) return;
@@ -152,10 +183,7 @@ export function App() {
           <Settings />
           <Welcome />
           <LinkDeviceDialog />
-          <ApproveThisDevice />
           <SaveWordsDialog />
-          <HandoverRequestDialog />
-          <KeyResetDialog />
           <SignInApproval />
           <FriendRequestDialog />
           <ApproveDeviceDialog />
@@ -164,7 +192,7 @@ export function App() {
           <DeviceSwitchModal />
           <ServerSettingsModal />
           <InviteAcceptModal
-            invite={pendingInvite}
+            invite={tryingHost ? null : pendingInvite}
             alreadyMember={alreadyMember}
             isSignedIn={isSignedIn}
             signingIn={loginInProgress}

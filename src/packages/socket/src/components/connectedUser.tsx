@@ -8,6 +8,7 @@ import { useSettings } from "@/settings";
 
 import { PiCameraFill,PiMicrophoneSlashFill, PiMonitorArrowUpFill, PiSpeakerSlashFill } from "../../../../lib/icons";
 import { useDrawnVideoSize } from "../hooks/useDrawnVideoSize";
+import { DiscordBadgeDot } from "./DiscordOnlyBadge";
 import { SpeakingHalo } from "./SpeakingHalo";
 import {
   speakingRingStyle,
@@ -34,6 +35,7 @@ export function ConnectedUser({
   isAFK,
   nickname,
   avatarSrc,
+  discordOnly,
   serverUserId,
   isSelf,
   isConnectingToVoice = false,
@@ -68,6 +70,8 @@ export function ConnectedUser({
   isAFK: boolean;
   nickname: string;
   avatarSrc?: string;
+  /** In a bridged Discord voice channel, not a member here. */
+  discordOnly?: boolean;
   serverUserId?: string;
   isSelf?: boolean;
   isConnectedToVoice?: boolean;
@@ -98,9 +102,10 @@ export function ConnectedUser({
   const rowRef = useRef<HTMLDivElement>(null);
   // Own-transport voice has no analyser; the transport reports its level, as on the tile (GRYT-1830).
   const { getTransportLevels } = useSFU();
+  // A gated sender still sends quiet packets, just without the speaking flag, so the level alone never drops out.
   const transportDb = useCallback(
-    () => (serverUserId ? (getTransportLevels?.()?.users.get(serverUserId) ?? -Infinity) : -Infinity),
-    [getTransportLevels, serverUserId],
+    () => (serverUserId && isSpeaking ? (getTransportLevels?.()?.users.get(serverUserId) ?? -Infinity) : -Infinity),
+    [getTransportLevels, serverUserId, isSpeaking],
   );
 
   return (
@@ -154,6 +159,7 @@ export function ConnectedUser({
                 ...speakingRingStyle(hue, isSpeaking, SIDEBAR_RING),
               }}
             />}
+            {discordOnly && !liveCamera && <DiscordBadgeDot size={11} />}
           </div>
           <span className="gryt-hide-in-icons text-sm truncate" style={{ whiteSpace: "nowrap" }}>{nickname}</span>
         </div>

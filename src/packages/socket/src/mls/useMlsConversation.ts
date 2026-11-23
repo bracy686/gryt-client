@@ -17,10 +17,12 @@ import type { AttachmentMeta, ChatMessage } from "../components/chatUtils";
 import { draftKey, returnDraft } from "../hooks/returnedDrafts";
 import { uploadChatFile } from "../hooks/uploadChatFile";
 import { getMediaDimensions } from "../utils/imageUtils";
+import { openUserSettings } from "../utils/openUserSettings";
 import { openSealedAttachment } from "../utils/sealedAttachments";
-import { askToApproveHere, useMlsSource } from "./serverMls";
+import { forgetHistoryAsk, historyAsked } from "./historyAsk";
+import { askOwnCopy, askTheirCopy, askToApproveHere, useMlsSource } from "./serverMls";
 import type { ConversationProblems } from "./session";
-import { archivedRow, newMessage, sendFailure, withOpenedFiles } from "./timeline";
+import { archivedRow, newMessage, sendFailure, WAITING_NOTE, withOpenedFiles } from "./timeline";
 
 const PAGE = 50;
 /** Coalesces a catch-up's hundreds of archive writes into a few redraws. */
@@ -100,6 +102,8 @@ export function useMlsConversation({
   meRef.current = me;
   const archivedRef = useRef(archived);
   archivedRef.current = archived;
+  /** Messages this load is already sending, so a waiting one from the archive isn't sent twice. */
+  const resumed = useRef(new Set<string>());
 
   const active = !!(source && conversationId && peer);
 
@@ -186,6 +190,8 @@ export function useMlsConversation({
             }),
           );
           setHasMore(read.length === limit);
+          // Nothing here yet: your other devices may have this chat, and they send it unasked.
+          if (!read.length) askOwnCopy(host, conversationId);
         };
         void load();
         off = archive.messages.onChange((change) => {
@@ -200,7 +206,11 @@ export function useMlsConversation({
       if (timer) clearTimeout(timer);
       off();
     };
-  }, [source, conversationId, peer, limit, archiveOpen, archiveEpoch]);
+  }, [source, conversationId, peer, limit, archiveOpen, archiveEpoch, host]);
+
+  useEffect(() => {
+    if (active && conversationId && (problems.undecryptable > 0 || archiveFacts.lostHistory)) askOwnCopy(host, conversationId);
+  }, [active, host, conversationId, problems.undecryptable, archiveFacts.lostHistory]);
 
   // Files are fetched and decrypted once each, the way a sealed DM's are.
   useEffect(() => {
@@ -242,6 +252,7 @@ export function useMlsConversation({
       const text = raw.trim();
       if ((!text && files.length === 0) || !source || !conversationId || !peer) return;
       const nonce = uuidv4();
+      resumed.current.add(nonce);
       const local = files.map((f) => ({
         file_id: `local-${uuidv4()}`,
         mime: f.type || null,
@@ -287,29 +298,14 @@ export function useMlsConversation({
           keys: Object.fromEntries(uploaded.flatMap((u) => (u.meta ? [[u.fileId, u.meta]] : []))),
         });
         if (!content) throw Object.assign(new Error("A file wasn't encrypted."), { code: "file_not_sealed" });
-        // Not in this chat yet: the message waits and goes once this device is added, rather than failing.
-        for (let tries = 0; ; tries++) {
-          try {
-            await source.send(conversationId, peer, content);
-            return;
-          } catch (e) {
-            if ((e as { code?: string })?.code !== "waiting_for_welcome" || tries >= WAIT_FOR_WELCOME_TRIES) throw e;
-            setDrafts((current) =>
-              current.map((m) => (m.nonce === nonce ? { ...m, waiting: true, waitingNote: "Sends by itself once this device is added to the chat" } : m)),
-            );
-            await new Promise<void>((resolve) => {
-              const done = () => {
-                off();
-                clearTimeout(timer);
-                resolve();
-              };
-              const off = source.onChange((id) => { if (id === conversationId || id === null) done(); });
-              const timer = setTimeout(done, WAIT_FOR_WELCOME_MS);
-            });
-          }
-        }
+        await deliver(source, conversationId, peer, content, () => {
+          setDrafts((current) => current.map((m) => (m.nonce === nonce ? { ...m, waiting: true, waitingNote: WAITING_NOTE } : m)));
+          // Kept on disk while it waits, so a restart doesn't lose it. Files would need their bytes kept too.
+          if (files.length === 0) void keepInOutbox(source.storeScope, conversationId, nonce, meRef.current.serverUserId, text, replyTo);
+        });
       })().catch((e: unknown) => {
         console.warn("[MLS] Send failed:", e);
+        void dropFromOutbox(source.storeScope, conversationId, nonce);
         const code = (e as { code?: string })?.code;
         fail(nonce, code === "file_not_sealed" ? "Not sent. A file wasn't encrypted." : sendFailure(e, archiveFacts.home));
         returnDraft(draftKey(host, conversationId), { text, files });
@@ -317,6 +313,29 @@ export function useMlsConversation({
     },
     [source, host, conversationId, peer, fail, archiveFacts.home],
   );
+
+  // Their copy is here, so the ask that brought it is done.
+  useEffect(() => {
+    if (conversationId && archived.some((m) => m.shared_by) && historyAsked(host, conversationId)) forgetHistoryAsk(host, conversationId);
+  }, [host, conversationId, archived]);
+
+  // A message left waiting when the app last closed goes again, once per load.
+  useEffect(() => {
+    if (!source || !conversationId || !peer) return;
+    for (const row of archived) {
+      if (!row.waiting || !row.nonce || row.sender_server_id !== meRef.current.serverUserId || resumed.current.has(row.nonce)) continue;
+      const nonce = row.nonce;
+      resumed.current.add(nonce);
+      const content = newMessage(nonce, row.text ?? "", row.reply_to_message_id ?? undefined, { ids: [], keys: {} });
+      if (!content) continue;
+      deliver(source, conversationId, peer, content, () => {}).catch((e: unknown) => {
+        console.warn("[MLS] A waiting message didn't go:", e);
+        void dropFromOutbox(source.storeScope, conversationId, nonce);
+        returnDraft(draftKey(host, conversationId), { text: row.text ?? "", files: [] });
+        toast.error(sendFailure(e, archiveFacts.home));
+      });
+    }
+  }, [source, conversationId, peer, archived, host, archiveFacts.home]);
 
   const change = useCallback(
     (content: MlsDmContent, failure: string) => {
@@ -356,24 +375,34 @@ export function useMlsConversation({
       if (hasMore) setLimit((n) => n + PAGE);
     }, [hasMore]),
     problems: active ? problems : NO_PROBLEMS,
-    lostHistory: active && archiveFacts.lostHistory,
+    lostHistory: active && archiveFacts.lostHistory && !problems.copyArrived,
     home: archiveFacts.home,
     archiveFailed: !!conversationId && !!peer && archiveNow.status.kind === "failed",
     send,
     actions: useMemo((): MlsAction[] => {
       if (!active || !conversationId) return [];
       const requestAdd = source?.requestAdd;
+      const missing = problems.undecryptable > 0 || (archiveFacts.lostHistory && !problems.copyArrived);
+      if (missing && !problems.lost && peer) {
+        const name = nameRef.current(peer) ?? "them";
+        return [{ label: `Ask ${name} for their copy`, run: () => {
+          if (askTheirCopy(host, conversationId, peer)) toast.success(`Asked ${name}. Their copy comes in the next time their app is open.`);
+        } }];
+      }
       if (problems.lost === "not_added" && requestAdd) {
         return [{ label: "Ask again", run: () => void requestAdd(conversationId).catch((e: unknown) => console.warn("[MLS] Couldn't ask to be added:", e)) }];
       }
+      const askAgain = requestAdd ? () => void requestAdd(conversationId).catch((e: unknown) => console.warn("[MLS] Couldn't ask to be added:", e)) : null;
+      if (problems.lost === "removed" && askAgain) return [{ label: "Ask to be added again", run: askAgain }];
+      if ((problems.lost === "out_of_sync" || problems.lost === "gap") && askAgain) return [{ label: "Rejoin", run: askAgain }];
+      if (problems.lost === "too_many_devices") return [{ label: "Remove unused devices", run: () => openUserSettings("devices") }];
       if (problems.lost !== "other_identity") return [];
-      // The safe choice first.
+      // Asking keeps this device's key and messages; linking replaces both. The server takes a new key only with the old key's approval.
       return [
+        { label: "Use my account's key", run: () => askToApproveHere(host) },
         { label: "Link this device", run: openLinkDevice },
-        // The server only takes a new key here with the old key's approval, or after a 30-day reset.
-        { label: "Other ways", run: () => askToApproveHere(host) },
       ];
-    }, [active, source, conversationId, problems, host, openLinkDevice]),
+    }, [active, source, conversationId, problems, host, openLinkDevice, peer, archiveFacts.lostHistory]),
     edit: useCallback(
       (id: string, text: string) => {
         const body = text.trim();
@@ -393,4 +422,46 @@ export function useMlsConversation({
       [change],
     ),
   };
+}
+
+
+/** Sends, and while this device isn't in the chat yet, waits and tries again rather than failing. */
+async function deliver(
+  source: NonNullable<ReturnType<typeof useMlsSource>>,
+  conversationId: string,
+  peer: string,
+  content: MlsDmContent,
+  onWaiting: () => void,
+): Promise<void> {
+  for (let tries = 0; ; tries++) {
+    try {
+      await source.send(conversationId, peer, content);
+      return;
+    } catch (e) {
+      if ((e as { code?: string })?.code !== "waiting_for_welcome" || tries >= WAIT_FOR_WELCOME_TRIES) throw e;
+      if (tries === 0) onWaiting();
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          off();
+          clearTimeout(timer);
+          resolve();
+        };
+        const off = source.onChange((id) => { if (id === conversationId || id === null) done(); });
+        const timer = setTimeout(done, WAIT_FOR_WELCOME_MS);
+      });
+    }
+  }
+}
+
+async function keepInOutbox(scope: string, conversationId: string, nonce: string, senderId: string | undefined, text: string, replyTo?: string) {
+  if (!senderId) return;
+  const archive = await openLocalArchive();
+  // The sent copy may have landed first: it wins.
+  if (await archive.messages.get(scope, conversationId, nonce)) return;
+  await archive.messages.put([{ scope, conversationId, messageId: nonce, sentAt: Date.now(), senderId, text, attachments: {}, outbox: true, ...(replyTo ? { replyTo } : {}) }]);
+}
+
+async function dropFromOutbox(scope: string, conversationId: string, nonce: string) {
+  const archive = await openLocalArchive();
+  if ((await archive.messages.get(scope, conversationId, nonce))?.outbox) await archive.messages.remove(scope, conversationId, nonce);
 }

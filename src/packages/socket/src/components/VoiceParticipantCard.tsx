@@ -14,6 +14,7 @@ import { cameraStreamFor } from "../lib/cameraStream";
 import { parseScreenItem, shareOf } from "../lib/screenItems";
 import type { Client } from "../types/clients";
 import { stopWatchingShare, useWatchedShares, watchShare } from "../utils/watchedShares";
+import { DiscordBadgeDot } from "./DiscordOnlyBadge";
 import type { AdminActions, MemberInfo } from "./MemberSidebar";
 import { ShareTileBar } from "./ShareTileBar";
 import { SpeakingHalo } from "./SpeakingHalo";
@@ -412,9 +413,10 @@ export function VoiceParticipantCard({
   useShareWindowsVersion();
   // Own-transport voice has no analyser to draw a halo from; the transport reports its level (GRYT-1830).
   const { getTransportLevels } = useSFU();
+  // A gated sender still sends quiet packets, just without the speaking flag, so the level alone never drops out.
   const transportDb = useCallback(
-    () => (serverUserId ? (getTransportLevels?.()?.users.get(serverUserId) ?? -Infinity) : -Infinity),
-    [getTransportLevels, serverUserId],
+    () => (serverUserId && isSpeaking ? (getTransportLevels?.()?.users.get(serverUserId) ?? -Infinity) : -Infinity),
+    [getTransportLevels, serverUserId, isSpeaking],
   );
 
   if (isScreenTile) {
@@ -686,7 +688,7 @@ export function VoiceParticipantCard({
         <Avatar
           size={compact ? "small" : "medium"}
           fallback={client.nickname[0]}
-          src={resolveAvatarSrc(
+          src={client.discord?.avatar ?? resolveAvatarSrc(
             avatarFileId
               ? // Full size: the tile draws up to 192 device px, past the 128px thumbnail, and animates.
                 // A video avatar gets its still poster instead, since this <img> can't play it.
@@ -702,6 +704,7 @@ export function VoiceParticipantCard({
             ...(compact ? {} : { width: avatarPx, height: avatarPx }),
           }}
         />
+        {client.discord && <DiscordBadgeDot size={compact ? 12 : Math.round(avatarPx * 0.28)} avatarPx={compact ? undefined : avatarPx} />}
 
         {isUserConnecting && (
           <div className="flex absolute items-center justify-center" style={{

@@ -6,17 +6,21 @@ import { HostedServerControls } from "@/settings/src/components/myServersSetting
 import { useEmbeddedServer } from "@/settings/src/hooks/useEmbeddedServer";
 import { hostedServerAt } from "@/settings/src/hostedServers";
 
-import { PiArrowsLeftRightFill, PiFlagFill, PiGearFill, PiHandWavingFill, PiHardDrivesFill, PiLinkFill, PiListChecksFill, PiProhibitFill, PiRobotFill, PiShieldCheckFill, PiSmileyWinkFill, PiUsersThreeFill, PiWebhooksLogoFill, PiX } from "../../../../lib/icons";
+import { PiCloudFill, PiFlagFill, PiGearFill, PiHardDrivesFill, PiHouseFill, PiLinkFill, PiList, PiRobotFill, PiShieldCheckFill, PiSmileyWinkFill, PiUsersThreeFill, PiX } from "../../../../lib/icons";
+import { useCloudUsage } from "../../../../lib/useCloudUsage";
 import { useRoomForSettingsRail } from "../hooks/useNarrowWindow";
 import { useServerPermissions } from "../hooks/usePermissions";
 import { useSockets } from "../hooks/useSockets";
 import { useVersionStatus } from "../hooks/useVersionStatus";
 import { SERVER_SETTINGS_CHROME } from "../lib/narrowLayout";
+import { CloudUsageTab } from "./CloudUsageTab";
 import { ReportsPanel } from "./ReportsPanel";
 import { ServerAuditTab } from "./ServerAuditTab";
 import { ServerBansTab } from "./ServerBansTab";
 import { ServerBotsTab } from "./ServerBotsTab";
+import { ServerDiscordTab } from "./ServerDiscordTab";
 import { ServerEmojisTab } from "./ServerEmojisTab";
+import { ServerHomeTab } from "./ServerHomeTab";
 import { ServerInvitesTab } from "./ServerInvitesTab";
 import { ServerJoinRequestsTab } from "./ServerJoinRequestsTab";
 import {
@@ -27,9 +31,8 @@ import { ServerPermissionTemplatesTab } from "./ServerPermissionTemplatesTab";
 import { ServerReleaseNotes } from "./ServerReleaseNotes";
 import { ServerRoleEditorTab } from "./ServerRoleEditorTab";
 import { ServerRolesTab } from "./ServerRolesTab";
-import { ServerUserReplaceTab } from "./ServerUserReplaceTab";
 import { ServerWebhooksTab } from "./ServerWebhooksTab";
-import { SettingsPicker } from "./SettingsPicker";
+import { StorageTab } from "./storage/StorageTab";
 
 type SetupRequiredDetail = {
   host: string;
@@ -49,8 +52,11 @@ type SetupRequiredDetail = {
 type SettingsOpenDetail = { host: string; tab?: string };
 
 /** The rail's headings, in order. A tab names the one it sits under. */
-const GROUPS = ["General", "People", "Channels", "Moderation", "Integrations", "Hosting"] as const;
+const GROUPS = [""] as const;
 type Group = (typeof GROUPS)[number];
+
+// Old tab names still land somewhere: other screens and older links ask for them.
+const MOVED_TABS: Record<string, [string, string]> = { requests: ["members", "waiting"], "replace-user": ["members", "everyone"], "role-editor": ["roles", "roles"], "permission-templates": ["roles", "channels"], emojis: ["emoji", ""], reports: ["moderation", "reports"], bans: ["moderation", "bans"], audit: ["moderation", "audit"], bots: ["integrations", "bots"], webhooks: ["integrations", "webhooks"], discord: ["integrations", "discord"], storage: ["hosting", ""], cloud: ["hosting", ""] };
 
 export function ServerSettingsModal() {
   const { sockets, serverDetailsList, tokenRevision, memberLists } = useSockets();
@@ -59,6 +65,7 @@ export function ServerSettingsModal() {
   const [isOpen, setIsOpen] = useState(false);
   const [host, setHost] = useState<string>("");
   const [tab, setTab] = useState<string>("overview");
+  const [sub, setSub] = useState("");
   const [notesOpen, setNotesOpen] = useState(false);
   const [initialOverviewSettings, setInitialOverviewSettings] = useState<ServerOverviewInitialSettings | undefined>(undefined);
 
@@ -95,11 +102,21 @@ export function ServerSettingsModal() {
     !!hostedHere;
   const allowTabs = canManage;
   const railFits = useRoomForSettingsRail(SERVER_SETTINGS_CHROME);
+  // Without room for the rail it becomes a drawer behind a menu button, as in user settings.
+  const drawer = !railFits;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const pickTab = (value: string) => {
+    const [t, page = ""] = value.split("/");
+    setTab(t);
+    setSub(page);
+    setMenuOpen(false);
+  };
 
 
   function handleDialogChange(open: boolean) {
     setIsOpen(open);
     if (!open) {
+      setMenuOpen(false);
       setNotesOpen(false);
       setHost("");
       setTab("overview");
@@ -113,7 +130,10 @@ export function ServerSettingsModal() {
       if (!h) return;
       setHost(h);
       setInitialOverviewSettings(undefined);
-      setTab(event.detail?.tab || "overview");
+      const asked = event.detail?.tab || "overview";
+      const [moved, part] = MOVED_TABS[asked] ?? [asked, ""];
+      setTab(moved);
+      setSub(part);
       setIsOpen(true);
     };
     window.addEventListener("server_settings_open", handler as EventListener);
@@ -155,6 +175,12 @@ export function ServerSettingsModal() {
     isOpen && hasPermission("view_server_status"),
   );
 
+  const cloudUsage = useCloudUsage(host, isOpen);
+
+  const allowed = (needs?: string[]) => !permissionKnown || !needs || needs.some((p) => hasPermission(p));
+  const only = <T extends { needs?: string[] }>(views: T[]) => views.filter((v) => allowed(v.needs));
+  const isOwner = serverDetailsList[host]?.server_info?.role === "owner";
+
   const ALL_TABS: {
     value: string;
     label: string;
@@ -162,148 +188,162 @@ export function ServerSettingsModal() {
     group: Group;
     /** Any one of these is enough. Absent means everybody who got this far. */
     needs?: string[];
-    content: ReactNode;
+    /** Sub-pages, listed under the tab in the rail while it's open. */
+    pages?: { value: string; label: string; needs?: string[]; content: ReactNode }[];
+    content?: ReactNode;
   }[] = [
     {
       value: "overview",
-      group: "General",
+      group: "",
       label: "Overview",
-      icon: PiGearFill,
+      icon: PiHouseFill,
       content: (
-        <ServerOverviewTab
+        <ServerHomeTab
+          host={host}
+          name={serverInfo?.name || host}
+          socket={socket}
+          accessToken={accessToken}
+          members={memberLists[host] ?? []}
+          cloudUsage={cloudUsage}
+          has={hasPermission}
+          onGo={pickTab}
+        />
+      ),
+    },
+    {
+      value: "settings",
+      group: "",
+      label: "Settings",
+      icon: PiGearFill,
+      pages: [
+        { value: "profile", label: "Profile", content: <ServerOverviewTab section="profile"
           host={host}
           socket={socket}
           accessToken={accessToken}
           initialSettings={initialOverviewSettings}
           channels={host ? serverDetailsList[host]?.channels ?? [] : []}
-        />
-      ),
+        /> },
+        { value: "uploads", label: "Uploads", content: <ServerOverviewTab section="uploads"
+          host={host}
+          socket={socket}
+          accessToken={accessToken}
+          initialSettings={initialOverviewSettings}
+          channels={host ? serverDetailsList[host]?.channels ?? [] : []}
+        /> },
+        { value: "chat", label: "Chat", content: <ServerOverviewTab section="chat"
+          host={host}
+          socket={socket}
+          accessToken={accessToken}
+          initialSettings={initialOverviewSettings}
+          channels={host ? serverDetailsList[host]?.channels ?? [] : []}
+        /> },
+        { value: "joining", label: "Joining", content: <ServerOverviewTab section="joining"
+          host={host}
+          socket={socket}
+          accessToken={accessToken}
+          initialSettings={initialOverviewSettings}
+          channels={host ? serverDetailsList[host]?.channels ?? [] : []}
+        /> },
+      ],
+    },
+    {
+      value: "members",
+      group: "",
+      label: "Members",
+      icon: PiUsersThreeFill,
+      needs: ["manage_roles", "manage_join_requests"],
+      pages: only([
+            { value: "everyone", label: "Everyone", needs: ["manage_roles"], content: <ServerRolesTab host={host} socket={socket} accessToken={accessToken} /> },
+            { value: "waiting", label: "Waiting", needs: ["manage_join_requests"], content: <ServerJoinRequestsTab host={host} socket={socket} accessToken={accessToken} /> },
+          ]),
     },
     {
       value: "invites",
-      group: "General",
+      group: "",
       label: "Invites",
       icon: PiLinkFill,
       needs: ["create_invite", "manage_invites"],
       content: <ServerInvitesTab host={host} socket={socket} accessToken={accessToken} />,
     },
     {
-      value: "requests",
-      group: "General",
-      label: "Requests",
-      icon: PiHandWavingFill,
-      needs: ["manage_join_requests"],
-      content: <ServerJoinRequestsTab host={host} socket={socket} accessToken={accessToken} />,
-    },
-    {
       value: "roles",
-      group: "People",
-      label: "Members",
-      icon: PiUsersThreeFill,
-      needs: ["manage_roles"],
-      content: <ServerRolesTab host={host} socket={socket} accessToken={accessToken} />,
-    },
-    {
-      value: "role-editor",
-      group: "People",
-      label: "Role editor",
+      group: "",
+      label: "Roles",
       icon: PiShieldCheckFill,
       needs: ["manage_roles"],
-      content: <ServerRoleEditorTab host={host} socket={socket} accessToken={accessToken} />,
+      pages: [
+            { value: "roles", label: "Roles", content: <ServerRoleEditorTab host={host} socket={socket} accessToken={accessToken} /> },
+            { value: "channels", label: "Channel permissions", content: <ServerPermissionTemplatesTab host={host} socket={socket} accessToken={accessToken} /> },
+          ],
     },
     {
-      value: "permission-templates",
-      group: "Channels",
-      label: "Channel permissions",
-      icon: PiShieldCheckFill,
-      needs: ["manage_roles"],
-      content: <ServerPermissionTemplatesTab host={host} socket={socket} accessToken={accessToken} />,
-    },
-    {
-      value: "emojis",
-      group: "General",
-      label: "Emojis",
+      value: "emoji",
+      group: "",
+      label: "Emoji",
       icon: PiSmileyWinkFill,
       needs: ["manage_emojis"],
       content: <ServerEmojisTab host={host} socket={socket} accessToken={accessToken} />,
     },
     {
-      value: "reports",
-      group: "Moderation",
-      label: "Reports",
+      value: "moderation",
+      group: "",
+      label: "Moderation",
       icon: PiFlagFill,
-      needs: ["view_reports"],
-      content: (
-        <ReportsPanel
-          isOpen={isOpen && tab === "reports"}
-          socket={socket ?? null}
-          serverHost={host}
-          memberList={memberLists[host]}
-        />
-      ),
+      needs: ["view_reports", "view_bans", "ban_members", "view_audit_log"],
+      pages: only([
+            {
+              value: "reports",
+              label: "Reports",
+              needs: ["view_reports"],
+              content: <ReportsPanel isOpen={isOpen && tab === "moderation"} socket={socket ?? null} serverHost={host} memberList={memberLists[host]} />,
+            },
+            {
+              value: "bans",
+              label: "Bans",
+              needs: ["view_bans", "ban_members"],
+              content: <ServerBansTab host={host} socket={socket} accessToken={accessToken} onUnban={(grytUserId) => socket?.emit("server:unban", { accessToken, grytUserId })} />,
+            },
+            { value: "audit", label: "Audit log", needs: ["view_audit_log"], content: <ServerAuditTab host={host} socket={socket} accessToken={accessToken} /> },
+          ]),
     },
     {
-      value: "bans",
-      group: "Moderation",
-      label: "Bans",
-      icon: PiProhibitFill,
-      needs: ["view_bans", "ban_members"],
-      content: (
-        <ServerBansTab
-          host={host}
-          socket={socket}
-          accessToken={accessToken}
-          onUnban={(grytUserId) => socket?.emit("server:unban", { accessToken, grytUserId })}
-        />
-      ),
-    },
-    {
-      value: "audit",
-      group: "Moderation",
-      label: "Audit Log",
-      icon: PiListChecksFill,
-      needs: ["view_audit_log"],
-      content: <ServerAuditTab host={host} socket={socket} accessToken={accessToken} />,
-    },
-    {
-      value: "bots",
-      group: "Integrations",
-      label: "Bots",
+      value: "integrations",
+      group: "",
+      label: "Integrations",
       icon: PiRobotFill,
-      needs: ["manage_bots"],
-      content: <ServerBotsTab host={host} socket={socket} accessToken={accessToken} />,
+      needs: ["manage_bots", "manage_webhooks", ...(isOwner ? ["manage_server"] : [])],
+      pages: only([
+            { value: "bots", label: "Bots", description: "Let a bot post and answer in channels", action: "Add a bot", needs: ["manage_bots"], content: <ServerBotsTab host={host} socket={socket} accessToken={accessToken} /> },
+            {
+              value: "webhooks",
+              label: "Webhooks",
+              description: "Post into a channel from another service",
+              action: "Add a webhook",
+              needs: ["manage_webhooks"],
+              content: <ServerWebhooksTab host={host} channels={host ? serverDetailsList[host]?.channels ?? [] : []} />,
+            },
+            // Owner only, like the server's bridge routes: it writes as other people.
+            ...(isOwner && serverDetailsList[host]?.server_info?.discord_bridge
+              ? [{ value: "discord", label: "Discord", description: "Keep a Discord server in step with this one", action: "Link Discord", content: <ServerDiscordTab host={host} members={memberLists[host] ?? []} /> }]
+              : []),
+          ]),
     },
-    {
-      value: "webhooks",
-      group: "Integrations",
-      label: "Webhooks",
-      icon: PiWebhooksLogoFill,
-      needs: ["manage_webhooks"],
-      content: (
-        <ServerWebhooksTab
-          host={host}
-          channels={host ? serverDetailsList[host]?.channels ?? [] : []}
-        />
-      ),
-    },
-    {
-      value: "replace-user",
-      group: "People",
-      label: "Replace User",
-      icon: PiArrowsLeftRightFill,
-      // Was owner-only by role name. It has its own permission now, which the
-      // owner still holds alone unless somebody deliberately grants it.
-      needs: ["replace_identity"],
-      content: <ServerUserReplaceTab host={host} socket={socket} accessToken={accessToken} />,
-    },
-    ...(hostedHere
+    ...(cloudUsage || hostedHere || allowed(["manage_server"])
       ? [
           {
             value: "hosting",
-            group: "Hosting" as const,
-            label: "This machine",
-            icon: PiHardDrivesFill,
-            content: <HostedServerControls serverId={hostedHere.id} />,
+            group: "" as const,
+            label: "Hosting",
+            icon: cloudUsage ? PiCloudFill : PiHardDrivesFill,
+            content: (
+              <div className="flex flex-col gap-6">
+                {[
+                  cloudUsage && <CloudUsageTab key="cloud" usage={cloudUsage} />,
+                  ...(hostedHere ? [<Fragment key="here"><HostedServerControls serverId={hostedHere.id} /></Fragment>] : []),
+                  allowed(["manage_server"]) && <StorageTab key="storage" host={host} socket={socket} onClose={() => handleDialogChange(false)} />,
+                ]}
+              </div>
+            ),
           },
         ]
       : []),
@@ -318,6 +358,7 @@ export function ServerSettingsModal() {
     label,
     options: TAB_CONFIG.filter((t) => t.group === label),
   })).filter((g) => g.options.length > 0);
+  const tabLabel = TAB_CONFIG.find((t) => t.value === tab)?.label;
 
   /*
    * Fall back when the selected tab is not one of the visible ones: the list
@@ -334,7 +375,7 @@ export function ServerSettingsModal() {
     setTab(values[0]);
   }, [isOpen, tab, visibleTabValues]);
 
-  // One set of lines for both layouts: under the rail when it fits, under the picker when it does not.
+  // Under the rail, which is a drawer in a narrow window.
   const versionLines = (
     <>
       {serverInfo?.version && (
@@ -391,10 +432,19 @@ export function ServerSettingsModal() {
     </>
   );
   const serverUpdate = versionStatus?.server.updateAvailable ? versionStatus.server : null;
-  const hasVersionLines = Boolean(serverInfo?.version || versionStatus?.sfu || versionStatus?.worker);
 
   return (
-    <Dialog.Root open={isOpen} onOpenChange={handleDialogChange}>
+    <Dialog.Root
+      open={isOpen}
+      onOpenChange={(open, details) => {
+        if (!open && menuOpen && details.reason === "escape-key") {
+          details.cancel();
+          setMenuOpen(false);
+          return;
+        }
+        handleDialogChange(open);
+      }}
+    >
       <Dialog.Portal>
         <Dialog.Backdrop />
         {/* Sized rather than bounded. max-width with no width leaves the
@@ -428,46 +478,82 @@ export function ServerSettingsModal() {
         </Dialog.Close>
 
         <div className="flex flex-col gap-4 h-full">
-          <Dialog.Title>
-            Server settings
-          </Dialog.Title>
+          <div className="flex items-center gap-2">
+            {drawer && allowTabs && (
+              <IconButton aria-label="Settings pages" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}>
+                <PiList size={18} />
+              </IconButton>
+            )}
+            <div className="flex flex-col min-w-0">
+              <Dialog.Title>Server settings</Dialog.Title>
+              {drawer && allowTabs && <span className="text-xs text-gryt-muted truncate">{tabLabel}</span>}
+            </div>
+          </div>
 
           {isOpen && (
             allowTabs ? (
               <Tabs
                 value={tab}
-                onValueChange={(v) => setTab(String(v))}
-                orientation={railFits ? "vertical" : "horizontal"}
+                onValueChange={(v) => pickTab(String(v))}
+                orientation="vertical"
                 style={{ flex: 1, minHeight: 0 }}
               >
                 {/* min-w-0 because Tabs is a flex row: without it the widest page
                     set the width, and a webhook URL pushed everything off the edge. */}
-                <div className={`flex gap-4 h-full min-w-0 flex-1 ${railFits ? "" : "flex-col"}`}>
-                  {!railFits && <SettingsPicker value={tab} onValueChange={setTab} options={TAB_GROUPS} />}
-                  {!railFits && hasVersionLines && (
-                    <div
-                      data-settings-versions="narrow"
-                      className="flex flex-wrap gap-x-4 gap-y-1"
-                      style={{ marginTop: "-8px", padding: "0 4px", fontFamily: "var(--code-font-family)" }}
-                    >
-                      {versionLines}
-                    </div>
+                <div className="flex gap-4 h-full min-w-0 flex-1">
+                  {drawer && menuOpen && (
+                    <div aria-hidden onClick={() => setMenuOpen(false)} className="gryt-settings-scrim" />
                   )}
-                  <div hidden={!railFits} style={{ minWidth: "200px", flexShrink: 0, overflowY: "auto" }}>
+                  <nav
+                    aria-label="Settings pages"
+                    inert={drawer && !menuOpen}
+                    className={drawer ? "gryt-settings-drawer" : undefined}
+                    data-open={drawer ? menuOpen : undefined}
+                    style={{ minWidth: "200px", flexShrink: 0, overflowY: "auto" }}
+                  >
+                    {drawer && (
+                      <div className="flex items-center gap-2" style={{ marginBottom: 8 }}>
+                        <IconButton tone="primary" aria-label="Close menu" onClick={() => setMenuOpen(false)} style={{ background: "var(--gryt-accent-a3)" }}>
+                          <PiList size={18} />
+                        </IconButton>
+                        <span className="text-lg font-bold">Server settings</span>
+                      </div>
+                    )}
                     <Tabs.List aria-label="Server settings" className="gap-1">
                       {TAB_GROUPS.map((group, i) => (
                         <Fragment key={group.label}>
-                          <span
-                            className="text-xs font-bold text-gryt-muted"
-                            style={{ padding: "0 12px", marginTop: i ? 12 : 0 }}
-                          >
-                            {group.label}
-                          </span>
-                          {group.options.map(({ value, label, icon: Icon }) => (
-                            <Tabs.Tab key={value} value={value}>
-                              <Icon size={16} />
-                              {label}
-                            </Tabs.Tab>
+                          {group.label && (
+                            <span className="text-xs font-bold text-gryt-muted" style={{ padding: "0 12px", marginTop: i ? 12 : 0 }}>
+                              {group.label}
+                            </span>
+                          )}
+                          {group.options.map(({ value, label, icon: Icon, pages }) => (
+                            <Fragment key={value}>
+                              <Tabs.Tab value={value} data-tour={`server-settings-${value}`}>
+                                <Icon size={16} />
+                                {label}
+                              </Tabs.Tab>
+                              {/* As in user settings: the tab you're in lists its pages under it. */}
+                              {value === tab && pages && pages.length > 1 && (
+                                <div className="server-settings-subnav-group">
+                                  {pages.map((page, i) => {
+                                    const on = sub ? page.value === sub : i === 0;
+                                    return (
+                                      <button
+                                        key={page.value}
+                                        type="button"
+                                        className="server-settings-subnav"
+                                        data-active={on}
+                                        aria-current={on ? "page" : undefined}
+                                        onClick={() => pickTab(`${value}/${page.value}`)}
+                                      >
+                                        {page.label}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </Fragment>
                           ))}
                         </Fragment>
                       ))}
@@ -476,17 +562,17 @@ export function ServerSettingsModal() {
                     <div className="flex flex-col gap-1" style={{ padding: "12px 16px", fontFamily: "var(--code-font-family)" }}>
                       {versionLines}
                     </div>
-                  </div>
+                  </nav>
 
-                  <div style={{ flex: 1, overflow: "auto", minWidth: 0, minHeight: 0 }}>
+                  <div style={{ flex: 1, overflow: "auto", minWidth: 0, minHeight: 0, isolation: "isolate" }}>
                     {!permissionKnown ? (
                       <span className="text-sm text-gryt-muted" style={{ marginBottom: 12 }}>
                         Loading permissions…
                       </span>
                     ) : null}
-                    {TAB_CONFIG.map(({ value, content }) => (
+                    {TAB_CONFIG.map(({ value, content, pages }) => (
                       <Tabs.Panel key={value} value={value}>
-                        {content}
+                        {content ?? (pages?.find((p) => p.value === sub) ?? pages?.[0])?.content}
                       </Tabs.Panel>
                     ))}
                   </div>

@@ -1,3 +1,4 @@
+import type { MlsHistoryEntry } from "@gryt/core";
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import type { Socket } from "socket.io-client";
@@ -15,6 +16,7 @@ import type { ChatMessage } from "../components/chatUtils";
 import { fakeDmsOn, fakeHistory } from "../dev/fakeDms";
 import { heldRoleIds } from "../lib/permissions";
 import { useMlsReportsTaken } from "../mls/serverMls";
+import { openedSealedHistory } from "../mls/shareHistory";
 import { dmComposer, isMlsPlaceholder, mergeTimeline, mlsNotice } from "../mls/timeline";
 import { type MlsAction, useMlsConversation } from "../mls/useMlsConversation";
 
@@ -41,6 +43,7 @@ import { forgetArchivedCopy, useArchiveReadCopies } from "./useArchiveReadCopies
 import { useChatSend } from "./useChatSend";
 import { useConversationSealing } from "./useConversationSealing";
 import { HISTORY_CAP, type HistoryWindowControls, isWindowPayload, useHistoryWindow, type WindowedHistoryPayload } from "./useHistoryWindow";
+import { fetchOlder } from "./useReencrypt";
 import { useSockets } from "./useSockets";
 
 interface UseChatParams {
@@ -109,6 +112,10 @@ interface UseChatReturn {
   mlsActions: MlsAction[];
   /** The notice is about the other person's key changing; offer their card. */
   peerKeyNotice: boolean;
+  /** This device waits for the other side's app to add it to the DM. */
+  mlsNotAdded: boolean;
+  /** The DM's sealed messages this device can open, for "Send them your copy". */
+  sealedHistory: () => Promise<MlsHistoryEntry[]>;
 }
 
 /** What the channel keeps of the present once the rest moves to a window. */
@@ -244,7 +251,10 @@ export function useChat({
     conversationId: activeConversationId,
     peer: dmPeer,
     me: { serverUserId: currentUserId, nickname },
-    nameFor: (id) => (id === currentUserId ? nickname : undefined),
+    nameFor: (id) => {
+      if (id === currentUserId) return nickname;
+      return id === dmPeer ? dmPeerName : undefined;
+    },
   });
   const mlsMode = mls.mode?.kind ?? null;
   useArchiveReadCopies({
@@ -793,8 +803,7 @@ export function useChat({
      encrypted, which it is, and the composer line says why it can't send. */
   const onMlsPath = !!dmPeer && (mlsMode === "mls" || mlsMode === "refused");
   /* Until somebody checks it, their new devices can't be added, so nothing reads as encrypted. */
-  const { memberKeyStates, memberLists } = useSockets();
-  const peerKeyResetAt = dmPeer ? memberLists[serverHost]?.find((m) => m.serverUserId === dmPeer)?.keyResetAt ?? null : null;
+  const { memberKeyStates } = useSockets();
   const peerKey = dmPeer ? memberKeyStates[serverHost]?.[dmPeer] : undefined;
   const peerKeyChanged = peerKey?.decision.kind === "changed" || peerKey?.personKey.kind === "changed";
   /* A message from them that opened here proves both ends share a working key.
@@ -807,7 +816,7 @@ export function useChat({
   );
 
   // When the line shown is "<name> has a new key", its buttons are for checking that key, not this device's.
-  const peerKeyNotice = mls.mode?.kind === "mls" && peerKeyChanged && mls.problems.lost !== "device_removed" && !(peerKeyResetAt && peerKeyResetAt > Date.now());
+  const peerKeyNotice = mls.mode?.kind === "mls" && peerKeyChanged && mls.problems.lost !== "device_removed";
   const composer = dmComposer({ dmPeer, mode: mls.mode, waiting: mls.waiting, archiveFailed: mls.archiveFailed, peerKeyChanged });
   const sendPath = composer.path;
   const sendOnEitherPath = useCallback(
@@ -827,6 +836,13 @@ export function useChat({
       else editMessage(messageId, conversationId, newText);
     },
     [shownMessages, editOverMls, editMessage],
+  );
+
+  const sealedHistory = useCallback(
+    () => currentConnection && activeConversationId && sealing.canOpen
+      ? openedSealedHistory((before) => fetchOlder(currentConnection, activeConversationId, before), sealing.open)
+      : Promise.resolve([]),
+    [currentConnection, activeConversationId, sealing],
   );
 
   return {
@@ -872,7 +888,6 @@ export function useChat({
           peerName: dmPeerName ?? "The other person",
           signedIn: isSignedIn,
           peerKeyChanged,
-          peerKeyResetAt,
         })
       : null,
     composerHeld: composer.held,
@@ -882,5 +897,7 @@ export function useChat({
     archiveFailed: composer.archiveProblem,
     mlsActions: dmPeer && !peerKeyNotice ? mls.actions : NO_ACTIONS,
     peerKeyNotice,
+    mlsNotAdded: !!dmPeer && !peerKeyNotice && mls.problems.lost === "not_added",
+    sealedHistory,
   };
 }

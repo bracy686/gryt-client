@@ -461,9 +461,22 @@ export function useServerState(): UseServerStateResult {
     afkTimeoutMinutes,
   ]);
 
+  // The server marks someone connected when a WebRTC peer sees their stream; on the own transport this client does it instead.
   useEffect(() => {
-    if (!currentlyViewingServer || !audioContext) return;
-    const hostClients = clients[currentlyViewingServer.host] || {};
+    if (!currentServerConnected || !transportUsers?.size) return;
+    const socket = sockets[currentServerConnected];
+    for (const c of Object.values(clients[currentServerConnected] || {})) {
+      if (c.serverUserId && c.streamID && !c.isConnectedToVoice && transportUsers.has(c.serverUserId)) {
+        socket?.emit("voice:peer:connected", c.streamID);
+      }
+    }
+  }, [transportUsers, clients, currentServerConnected, sockets]);
+
+  useEffect(() => {
+    // The call's server, not the one on screen: browsing elsewhere left a rejoiner's WebRTC copy at full volume (GRYT-1935).
+    const voiceHost = currentServerConnected ?? currentlyViewingServer?.host;
+    if (!voiceHost || !audioContext) return;
+    const hostClients = clients[voiceHost] || {};
     const baseGain = sliderToOutputGain(outputVolume);
     // The own transport takes the same per-user volume; its output gain already carries the rest.
     setTransportUserGains?.(
@@ -494,6 +507,7 @@ export function useServerState(): UseServerStateResult {
     outputVolume,
     isDeafened,
     clients,
+    currentServerConnected,
     currentlyViewingServer,
     streamSources,
     audioContext,

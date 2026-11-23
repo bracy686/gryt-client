@@ -4,6 +4,9 @@ import { accessTokenOf, setProfanityMode } from "../support/admin";
 import { addChannel, composer, CONFIRMED_ROW, type Member, messageRow, sendMessage, sidebarChannelRow, unique } from "../support/app";
 import { expect, test, uniqueName } from "../support/fixtures";
 
+// Each test brings its own members and messages, so they spread across workers and shards.
+test.describe.configure({ mode: "parallel" });
+
 /** The panel itself: what closes it, what Escape means inside it, where it opens. */
 
 /** Wide enough for the panel to sit beside the conversation; `hasRoomForThreadBeside` says 1164. */
@@ -15,9 +18,9 @@ function panel(page: Page): Locator {
   return page.getByRole("complementary", { name: "Thread" });
 }
 
-/** Top-left: in Cozy the next row's hover bar sits over the bottom right of this one (GRYT-1722). */
-async function hoverRow(row: Locator): Promise<void> {
-  await row.hover({ position: { x: 24, y: 6 } });
+/** The menu the hover bar's More opens. Hover then click lost the bar whenever the chat re-pinned under the pointer. */
+async function openMenu(row: Locator): Promise<void> {
+  await row.click({ button: "right" });
 }
 
 function threadComposer(page: Page): Locator {
@@ -26,16 +29,14 @@ function threadComposer(page: Page): Locator {
 
 async function startThread(page: Page, rootText: string): Promise<void> {
   const row = messageRow(page, rootText);
-  await hoverRow(row);
-  await row.getByTitle("More", { exact: true }).click();
+  await openMenu(row);
   await page.getByRole("menuitem", { name: /^Start thread/ }).click();
   await expect(panel(page)).toBeVisible();
 }
 
 async function openThread(page: Page, rootText: string): Promise<void> {
   const row = messageRow(page, rootText);
-  await hoverRow(row);
-  await row.getByTitle("More", { exact: true }).click();
+  await openMenu(row);
   await page.getByRole("menuitem", { name: /^Open thread/ }).click();
   await expect(panel(page)).toBeVisible();
 }
@@ -57,8 +58,7 @@ async function closeTopic(page: Page): Promise<void> {
 
 async function deleteMessage(page: Page, text: string): Promise<void> {
   const row = messageRow(page, text);
-  await hoverRow(row);
-  await row.getByTitle("More", { exact: true }).click();
+  await openMenu(row);
   await page.getByRole("menuitem", { name: "Delete Message" }).click();
   await page.getByRole("button", { name: "Delete", exact: true }).last().click();
   await expect(messageRow(page, text)).toHaveCount(0);
@@ -256,15 +256,13 @@ test("deleting a threaded message counts the replies going with it", async ({ ne
   const dialog = alice.page.getByRole("alertdialog");
 
   const plainRow = messageRow(alice.page, plain);
-  await plainRow.hover();
-  await plainRow.getByTitle("More", { exact: true }).click();
+  await openMenu(plainRow);
   await alice.page.getByRole("menuitem", { name: "Delete Message" }).click();
   await expect(dialog).toContainText("This deletes the message for everyone.");
   await dialog.getByRole("button", { name: "Cancel" }).click();
 
   const rootRow = messageRow(alice.page, root);
-  await rootRow.hover();
-  await rootRow.getByTitle("More", { exact: true }).click();
+  await openMenu(rootRow);
   await alice.page.getByRole("menuitem", { name: "Delete Message" }).click();
   await expect(dialog, "the server takes the thread with the root").toContainText(
     "This deletes the message and the 2 replies in its thread.",
@@ -286,7 +284,7 @@ test("starting a thread with no connection says so", async ({ newMember }) => {
         async () => {
           const row = messageRow(alice.page, root);
           await row.hover();
-          await row.getByTitle("More", { exact: true }).click({ force: true });
+          await row.getByRole("button", { name: "More", exact: true }).click({ force: true });
           await alice.page.getByRole("menuitem", { name: /^Start thread/ }).click();
           return alice.page.getByText("Not connected to this server").isVisible();
         },
@@ -372,7 +370,7 @@ test("a message row beside the panel takes a click where the panel used to be", 
 
   // And the actions on it are reachable, which is what the overlap cost.
   await row.hover();
-  await expect(row.getByTitle("More", { exact: true })).toBeVisible();
+  await expect(row.getByRole("button", { name: "More", exact: true })).toBeVisible();
 });
 
 /** One socket.io event held back in a page's socket until `release`, so a race runs in the order a test picks. */

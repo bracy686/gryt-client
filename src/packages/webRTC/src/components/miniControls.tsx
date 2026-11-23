@@ -1,4 +1,4 @@
-import { IconButton } from "@gryt/ui";
+import { CallControlButton, controlState, IconButton, LEAVE_CLASS } from "@gryt/ui";
 import { useCamera, useScreenShare, useSFU } from "@gryt/voice";
 import { AnimatePresence, motion, type Variants } from "motion/react";
 import toast from "react-hot-toast";
@@ -13,9 +13,6 @@ import { useInACall } from "../adapters/inACall";
 import { useVoicePresence } from "../adapters/useVoicePresence";
 import { type CallButton, pressCallButton, useBackToCall } from "./callButtonPress";
 import { CallCapsuleFace } from "./CallCapsuleFace";
-import { CallControlButton, LEAVE_CLASS } from "./CallControlButton";
-import { controlState } from "./controlState";
-import { NoiseReductionControl } from "./NoiseReductionControl";
 
 const buttonAnimations: Variants = {
   hidden: { opacity: 0, x: -15, transition: { duration: 0.1 } },
@@ -135,10 +132,6 @@ export function MiniControls({
                   <PiSpeakerHighFill size={iconSize} />
                 )}
               </CallControlButton>
-            </motion.div>
-
-            <motion.div variants={buttonAnimations}>
-              <NoiseReductionControl iconSize={iconSize} side={isColumn ? "right" : "top"} />
             </motion.div>
 
             {/* Plain toggles: off opens the voice view and presses its own button there, on turns straight off. */}

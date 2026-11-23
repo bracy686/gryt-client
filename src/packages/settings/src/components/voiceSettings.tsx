@@ -88,12 +88,12 @@ export function VoiceSettings() {
       <div className="flex flex-col gap-4">
         <SoundSettings
           label="Connect sound"
-          description="Play sound when connecting to voice"
+          description="When you or someone else joins your voice channel"
           enabled={connectSoundEnabled}
           onEnabledChange={setConnectSoundEnabled}
           volume={connectSoundVolume}
           onVolumeChange={setConnectSoundVolume}
-          defaultVolume={10}
+          defaultVolume={60}
           customSoundFile={customConnectSoundFile}
           onCustomSoundFileChange={setCustomConnectSoundFile}
           defaultSoundSrc={connectMp3}
@@ -101,12 +101,12 @@ export function VoiceSettings() {
         />
         <SoundSettings
           label="Disconnect sound"
-          description="Play sound when disconnecting from voice"
+          description="When you or someone else leaves your voice channel"
           enabled={disconnectSoundEnabled}
           onEnabledChange={setDisconnectSoundEnabled}
           volume={disconnectSoundVolume}
           onVolumeChange={setDisconnectSoundVolume}
-          defaultVolume={10}
+          defaultVolume={60}
           customSoundFile={customDisconnectSoundFile}
           onCustomSoundFileChange={setCustomDisconnectSoundFile}
           defaultSoundSrc={disconnectMp3}

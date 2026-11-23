@@ -372,6 +372,8 @@ export interface ElectronAPI {
   onWindowFocusChange(callback: (focused: boolean) => void): () => void;
   onUpdateStatus(callback: (status: UpdateStatus) => void): () => void;
   openExternal(url: string): void;
+  /** Quits for real, rather than closing to the tray: Linux often has no tray to quit from. */
+  quit(): void;
   loadUserData(userId: string): Promise<Record<string, unknown>>;
   saveUserData(userId: string, data: Record<string, unknown>): void;
   setUserData(userId: string, key: string, value: unknown): void;
@@ -404,7 +406,7 @@ export interface ElectronAPI {
     callback: (server: { host: string; port: number }) => void
   ): () => void;
   onDeepLinkInvite(
-    callback: (data: { host: string; code: string }) => void
+    callback: (data: { host: string; code: string; welcome?: boolean }) => void
   ): () => void;
   onDeepLinkLook(
     callback: (data: { card?: string; owl?: string }) => void

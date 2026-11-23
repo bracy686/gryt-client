@@ -1,4 +1,4 @@
-import { base64Url as sharedBase64Url, base64UrlDecode as sharedBase64UrlDecode } from "@gryt/crypto";
+import { base64Url as sharedBase64Url, base64UrlDecode as sharedBase64UrlDecode, sealDeviceName } from "@gryt/crypto";
 /**
  * Client-side ECDSA P-256 keypair management for challenge-response
  * identity authentication. The private key never leaves the client.
@@ -10,7 +10,6 @@ import {
   type DmKeyPair,
   type MlsDevice,
   signDmKeyBinding,
-  signKeyHandover,
   signPersonKeyBinding,
 } from "@gryt/crypto";
 
@@ -405,8 +404,6 @@ export async function signJwtWithKey(
  * identity this device actually joined with** — the signature depends on it.
  */
 export async function dmKeyBindingFor(host: string): Promise<string | null> {
-  const scope = identityScopeFor(host);
-
   const db = await openDB();
   let seed: Uint8Array;
   try {
@@ -414,6 +411,24 @@ export async function dmKeyBindingFor(host: string): Promise<string | null> {
   } finally {
     db.close();
   }
+  return dmKeyBindingFromSeed(seed, host);
+}
+
+/** This device's name sealed with the seed, so only your own devices can read it. */
+export async function sealedDeviceName(name: string): Promise<string> {
+  const db = await openDB();
+  let seed: Uint8Array;
+  try {
+    seed = await getOrCreateSeed(db);
+  } finally {
+    db.close();
+  }
+  return sealDeviceName(seed, name);
+}
+
+/** The binding `seed` would publish for one server, before it's this device's seed. */
+export async function dmKeyBindingFromSeed(seed: Uint8Array, host: string): Promise<string> {
+  const scope = identityScopeFor(host);
 
   /*
    * **Signed with the key derived from the seed, whichever identity joined this
@@ -429,14 +444,6 @@ export async function dmKeyBindingFor(host: string): Promise<string | null> {
     identityPrivateKey: identity.privateKey,
     identityPublicJwk,
   });
-}
-
-/** This device's key handing `host` over to `newBinding` (GRYT-1886). Signed like `dmKeyBindingFor`. */
-export async function keyHandoverFor(host: string, newBinding: string): Promise<string> {
-  const { seed, scope } = await readSeedFor(host);
-  const identity = await deriveLocalKeyPair(seed, scope);
-  const identityPublicJwk = await crypto.subtle.exportKey("jwk", identity.publicKey);
-  return signKeyHandover({ newBinding, scope, identityPrivateKey: identity.privateKey, identityPublicJwk });
 }
 
 async function readSeedFor(host: string): Promise<{ seed: Uint8Array; scope: IdentityScope }> {

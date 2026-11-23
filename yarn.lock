@@ -551,18 +551,18 @@
   resolved "https://registry.yarnpkg.com/@floating-ui/utils/-/utils-0.2.12.tgz#afefe785949f16ac4cdd1e695935a321572dd56a"
   integrity sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==
 
-"@gryt/core@0.33.1":
-  version "0.33.1"
-  resolved "https://registry.yarnpkg.com/@gryt/core/-/core-0.33.1.tgz#ed0ed9441127103290feae0875c5482f09a26763"
-  integrity sha512-c59508Rq04x7YRwpqPnaTv/MycJb12K7zeKiEBoH7+K3Hyyn/86I37uvLdo3G+wLWZS0N6GOl/4VRFmhNXPPbA==
+"@gryt/core@0.35.4":
+  version "0.35.4"
+  resolved "https://registry.yarnpkg.com/@gryt/core/-/core-0.35.4.tgz#ce60d53d70eb61a500239e6b5db7c7265b7c8051"
+  integrity sha512-H/4O4KqVjL43/OcGRL4nNLjg9gdL4N9r0tpAHAQmfg+RAg9b/s/sXgxyP1umrlzOkH9H1H64scCZsVtyy+fWxA==
   dependencies:
-    "@gryt/crypto" "0.14.0"
+    "@gryt/crypto" "0.17.1"
     "@noble/hashes" "^2.3.0"
 
-"@gryt/crypto@0.14.0":
-  version "0.14.0"
-  resolved "https://registry.yarnpkg.com/@gryt/crypto/-/crypto-0.14.0.tgz#60d5d717677b1bb9e2831f170475bb7e0e3bae62"
-  integrity sha512-LSaDJvmRMY/7aCuVfr2pBAvp5ydlSpBrL6TsXJG6TOkMM/dfzcwi7duLz/Y84qzmK1r6gNgqR02dEPp//2Ak1w==
+"@gryt/crypto@0.17.1":
+  version "0.17.1"
+  resolved "https://registry.yarnpkg.com/@gryt/crypto/-/crypto-0.17.1.tgz#408f937b80aaef37f86ed7c3e4996e86e101ce92"
+  integrity sha512-fGEGIF5vKFKnQGXHSmV6NAVb+aJBzQKIzCRqpfiixhhOTpQmy64kBKHz7KBU4EsjZ31KD0V81dzlMiBQumIlSg==
   dependencies:
     "@noble/ciphers" "^2"
     "@noble/curves" "^2.3.0"
@@ -571,34 +571,34 @@
     fflate "0.8.3"
     ts-mls "npm:@gryt/ts-mls@1.6.4-gryt.1"
 
-"@gryt/owl@^0.7.0":
-  version "0.7.0"
-  resolved "https://registry.yarnpkg.com/@gryt/owl/-/owl-0.7.0.tgz#730a4f9fc3b355dd3629e1bce1d8af71e765ff75"
-  integrity sha512-Bi+xkPjEnvdjGvqV+nYGLYCtlEG5ZkeUZNmGA1KK7U5Gu350mGrpCB5k+h+hss8BbHt5kfX15PDoNHKVoUOevA==
+"@gryt/owl@^0.8.1":
+  version "0.8.1"
+  resolved "https://registry.yarnpkg.com/@gryt/owl/-/owl-0.8.1.tgz#478f4a9b10635446a1ccab4479534eda825d8b5b"
+  integrity sha512-FgtPHYjE0XbISEphFR1OwDKiealPR1jk65GKMqrmDseH96DIVs9nh8WPxigaDBoUhP4wge7gmMzrkHPHZrF5XA==
 
-"@gryt/theme@^0.13.0":
-  version "0.13.0"
-  resolved "https://registry.yarnpkg.com/@gryt/theme/-/theme-0.13.0.tgz#640f3049b53cfe427f0067cfc5faeffbd04d36aa"
-  integrity sha512-7CW/wBKZFL1bfk5xQcJtvdoD+rbCvmHeA0U2uTQMQ9gfXAvIbPx7GL+TjMYYouTtLdJ/OKFARK+NXuS0RaBveg==
+"@gryt/theme@^0.13.1":
+  version "0.13.1"
+  resolved "https://registry.yarnpkg.com/@gryt/theme/-/theme-0.13.1.tgz#0979f78b677413d205896892044dd6ea10a62fec"
+  integrity sha512-/NeIgtMR1axuCSmMPsWDGeQWhenCsshtKT3js/y1nAdYCPmVayJ81jM6t2c0CQ1zlNYsSEMPkkPcKVOZdGw2eA==
 
-"@gryt/ui@^0.46.0":
-  version "0.46.0"
-  resolved "https://registry.yarnpkg.com/@gryt/ui/-/ui-0.46.0.tgz#403d56ccd2a19786b22747e5101356f449bcc08e"
-  integrity sha512-s4rcdxajDpoBOkojphvQJStq9fz+9flj48bujyWXwfMnM67pjUZMgn6RmoSPzmn9Awps87mF8tB1c4TmKTn1Tw==
+"@gryt/ui@^0.54.0":
+  version "0.54.0"
+  resolved "https://registry.yarnpkg.com/@gryt/ui/-/ui-0.54.0.tgz#d2b7da130ec15916f7a632dce4aba20f08c011b0"
+  integrity sha512-t/jnTnMRH8xPgjMfi0ReJXxMz31lYMFKTp3YBaZl/Ku4kl6Rq5OpJqackRzpTOEp+UvCLnE4wEX2uxMJxcYZ/g==
   dependencies:
     "@base-ui/react" "^1.7.0"
-    "@gryt/owl" "^0.7.0"
-    "@gryt/theme" "^0.13.0"
+    "@gryt/owl" "^0.8.1"
+    "@gryt/theme" "^0.13.1"
     "@phosphor-icons/react" "^2.1.10"
     "@tanstack/react-virtual" "^3.13.12"
     clsx "^2.1.1"
     gemoji "^8.1.0"
     tailwind-merge "^3.4.0"
 
-"@gryt/voice@0.9.1":
-  version "0.9.1"
-  resolved "https://registry.yarnpkg.com/@gryt/voice/-/voice-0.9.1.tgz#1af575ab1b701599f4b332387ad6ea7218b12e2a"
-  integrity sha512-kO1huQjLbi3TP1YztdpefB4nWZFWz6rcOG9V+pW6sJxKcbJbVy9LyYq2w8xf0tmtCpEIQW6IZGtoLxqnJ+Picw==
+"@gryt/voice@0.10.3":
+  version "0.10.3"
+  resolved "https://registry.yarnpkg.com/@gryt/voice/-/voice-0.10.3.tgz#4a42f2cdcd7efc65248977a399bd79a792633bff"
+  integrity sha512-5In3T9ZpSZX9T4WQ71ZuYchfFHM+ro/xjD0FJO4zINy+AXMezB13c3TbSutimr/xC7NsTYrNzBvkcommqQhgHg==
 
 "@hpke/common@^1.10.0":
   version "1.10.1"

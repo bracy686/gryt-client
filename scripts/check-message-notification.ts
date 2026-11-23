@@ -76,7 +76,7 @@ assert.equal(mentionsMember({ text: "[@Sivert](mention:user_me) look", sender_se
 // Named under an old nickname: the link still carries the id.
 assert.equal(mentionsMember({ text: "[@Siv](mention:user_me)", sender_server_id: "u2" }, me), true);
 // An email address, a longer name, the bare name, and nothing to read.
-assert.equal(mentionsMember({ text: "mail me at a@sivert.io", sender_server_id: "u2" }, me), false);
+assert.equal(mentionsMember({ text: "mail me at a@example.com", sender_server_id: "u2" }, me), false);
 assert.equal(mentionsMember({ text: "@Sivert2 is somebody else", sender_server_id: "u2" }, me), false);
 assert.equal(mentionsMember({ text: "email@Sivert", sender_server_id: "u2" }, me), false);
 assert.equal(mentionsMember({ text: "no at sign, Sivert", sender_server_id: "u2" }, me), false);
@@ -167,5 +167,17 @@ assert.equal(shouldNotifyForMessage(HOST, from("u2", "general"), background(fals
 // A fresh server:details replaces the defaults rather than merging them.
 rememberPlacements(HOST, sidebar, [{ id: "git-activity", defaultNotificationLevel: "all" }]);
 assert.equal(shouldNotifyForMessage(HOST, from("webhook:1", "git-activity"), background(false)), true);
+
+// ── A DM has its own level and never takes the server's ─────────────────────
+const DM = "dm_abc";
+setNotificationLevel(HOST, { kind: "server" }, "none");
+assert.equal(shouldNotifyForMessage(HOST, from("u2", "general"), background(false)), false);
+assert.equal(shouldNotifyForMessage(HOST, from("u2", DM), background(false)), true, "a muted server leaves its DMs alone");
+setNotificationLevel(HOST, { kind: "server" }, null);
+level(DM, "none");
+assert.equal(shouldNotifyForMessage(HOST, from("u2", DM), background(false)), false, "a muted DM is quiet");
+assert.equal(shouldNotifyForMessage(HOST, naming("u2", DM), background(false, true)), false, "even when named");
+level(DM, null);
+assert.equal(shouldNotifyForMessage(HOST, from("u2", DM), background(false)), true);
 
 console.log("message notification: ok");

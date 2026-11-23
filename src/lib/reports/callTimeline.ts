@@ -13,13 +13,21 @@ export interface CallStatsSample {
   bitrateKbps: number | null;
   /** The whole voice path, both ways, as the latency panel estimates it. */
   estimatedRoundTripMs: number | null;
+  /** On the own voice transport: the most anyone's audio waits here, and the slowest round trip. The rest is WebRTC's. */
+  transportBufferedMs?: number | null;
+  transportRttMs?: number | null;
+  /** Frames made up so far on the own transport, late or lost, everyone together (GRYT-2231). */
+  transportConcealed?: number | null;
   /** Background windows throttle timers, which is the first suspect for "after a while". */
   visible: boolean;
   focused: boolean;
 }
 
 const MAX_LINES = 300;
+/** How much of the call before this one a report keeps: rejoining to fix a call is when people report it. */
+const PREVIOUS_LINES = 120;
 let lines: string[] = [];
+let previous: string[] = [];
 let started = 0;
 let before: CallStatsSample | null = null;
 
@@ -39,13 +47,17 @@ export function formatCallSample(secs: number, now: CallStatsSample, prev: CallS
     `rtt ${ms(now.rttMs)} jitter ${ms(now.jitterMs)} buffer ${ms(now.jitterBufferMs)}`,
     `lost ${lost}`,
     `${now.bitrateKbps === null ? "?" : Math.round(now.bitrateKbps)}kbps`,
+    ...(now.transportBufferedMs == null && now.transportRttMs == null
+      ? []
+      : [`own buffer ${ms(now.transportBufferedMs ?? null)} rtt ${ms(now.transportRttMs ?? null)} made up ${lostSince(now.transportConcealed ?? null, prev?.transportConcealed)}`]),
     `est ${ms(now.estimatedRoundTripMs)}`,
     `${now.visible ? "visible" : "hidden"}${now.focused ? " focused" : ""}`,
   ].join(" | ");
 }
 
-/** A new call starts a new timeline, so a report holds the call it was sent from or the last one. */
+/** A new call starts a new timeline and keeps the end of the one before it. */
 export function startCallTimeline(): void {
+  previous = lines.length > PREVIOUS_LINES ? [lines[0], ...lines.slice(-(PREVIOUS_LINES - 1))] : lines;
   started = Date.now();
   before = null;
   lines = [`call started ${new Date(started).toISOString()}`];
@@ -65,7 +77,7 @@ export function endCallTimeline(): void {
   started = 0;
 }
 
-/** The current or last call's lines, oldest first. Empty before the first call. */
+/** The previous call's last lines, then the current or last call's, oldest first. Empty before the first call. */
 export function callTimeline(): string[] {
-  return lines.slice();
+  return [...previous, ...lines];
 }

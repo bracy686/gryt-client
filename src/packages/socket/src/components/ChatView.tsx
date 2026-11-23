@@ -32,8 +32,10 @@ import { ChatEditorBar } from "./ChatEditorBar";
 import { MessageSkeleton, WelcomeMessage } from "./ChatMessage";
 import type { ChatMessage } from "./chatUtils";
 import { buildMessageMap, buildMessageMetadata, getReplyPreview } from "./chatViewHelpers";
+import { CloudWelcome } from "./CloudWelcome";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DirectMessagePrivacyNotice } from "./DirectMessagePrivacyNotice";
+import { DiscordOffer } from "./DiscordOffer";
 import { EmojiText } from "./EmojiText";
 import { ForumView } from "./ForumView";
 import { ImageLightbox, type LightboxGallery } from "./ImageLightbox";
@@ -46,6 +48,7 @@ import { MessageRow } from "./MessageRow";
 import { MlsNoticeLine } from "./MlsNoticeLine";
 import { PinsButton } from "./PinsButton";
 import { PollDialog } from "./PollDialog";
+import { StorageFull } from "./StorageFull";
 import { ThreadPanel } from "./ThreadPanel";
 import { TypingIndicator } from "./TypingIndicator";
 
@@ -54,6 +57,7 @@ const MESSAGE_ENTER_MS = 600;
 
 function placeholderFor(s: {
   offlineLine: string | undefined;
+  planLine: string | undefined;
   voiceTextHidden: boolean | undefined;
   mayRead: boolean | undefined;
   maySend: boolean | undefined;
@@ -63,6 +67,7 @@ function placeholderFor(s: {
   inClear: boolean | undefined;
 }): string {
   if (s.offlineLine) return s.offlineLine;
+  if (s.planLine) return s.planLine;
   /* A placeholder, so short. The notice in the body says why. */
   if (s.voiceTextHidden) return "Can't chat here right now";
   if (!s.mayRead) return "This channel is not readable with your role.";
@@ -96,6 +101,7 @@ export interface MlsView {
   archiveFailed: boolean;
   /** Buttons for the notice line: ask again to be added, link this device. */
   actions?: MlsAction[];
+  /** This server still has an older device's key, and this device holds the account's. */
 }
 
 /** Where the composer would be, for somebody who may read a channel and not post. */
@@ -130,6 +136,10 @@ export const ChatView = memo(({
   hidePins = false,
   moreMenu,
   underHeader,
+  discordOfferHost,
+  cloudWelcomeHost,
+  planLine,
+  isOwner,
   flush,
   isRateLimited,
   rateLimitCountdown,
@@ -199,6 +209,13 @@ export const ChatView = memo(({
   /** A slot rather than the panel, because this is the same component for a DM
       and knows nothing about servers. */
   underHeader?: React.ReactNode;
+  /** The owner's server: an empty channel offers to bring a Discord server. */
+  discordOfferHost?: string;
+  /** The owner's first open of a new Gryt Cloud server. */
+  cloudWelcomeHost?: string;
+  /** A read-only Gryt Cloud server says so in the composer. */
+  planLine?: string;
+  isOwner?: boolean;
   /** In the tiny window the conversation is the window, and a rounded corner
       against the window's own reads as something clipped. */
   flush?: boolean;
@@ -580,7 +597,9 @@ export const ChatView = memo(({
 
   const getSenderAvatarUrl = useCallback((msg: ChatMessage): string | undefined => {
     const fileId = memberList?.[msg.sender_server_id]?.avatarFileId || msg.sender_avatar_file_id;
-    const uploaded = fileId && serverHost ? getUploadsFileUrl(serverHost, fileId) : undefined;
+    // A video avatar's file can't be drawn as an image, so it shows its still, like the member list.
+    const still = memberList?.[msg.sender_server_id]?.avatarVideo ? { thumb: true } : undefined;
+    const uploaded = fileId && serverHost ? getUploadsFileUrl(serverHost, fileId, still) : undefined;
     // From the member list, never the message: a message carries the avatar its
     // sender had, and a look is drawn live.
     const worn = memberList?.[msg.sender_server_id]?.avatarWorn;
@@ -879,6 +898,7 @@ export const ChatView = memo(({
 
   const editorPlaceholder = placeholderFor({
     offlineLine,
+    planLine,
     voiceTextHidden: !canViewVoiceChannelText && isVoiceChannelTextChat,
     mayRead,
     maySend,
@@ -888,7 +908,7 @@ export const ChatView = memo(({
     inClear,
   });
 
-  const editorDisabled = !!offlineLine || (!canViewVoiceChannelText && isVoiceChannelTextChat) || !maySend || !mayRead || !!mls?.held;
+  const editorDisabled = !!offlineLine || !!planLine || (!canViewVoiceChannelText && isVoiceChannelTextChat) || !maySend || !mayRead || !!mls?.held;
 
   const showVoiceDisabled = !canViewVoiceChannelText && isVoiceChannelTextChat;
   const showMessages = mayRead && !showVoiceDisabled && !isLoadingMessages && chatMessages.length > 0;
@@ -1007,8 +1027,15 @@ export const ChatView = memo(({
             </div>
           )}
           {!showVoiceDisabled && !isLoadingMessages && chatMessages.length === 0 && (
-            <div className="flex grow items-center justify-center" style={{ paddingBottom: "16px" }}>
-              <WelcomeMessage channelName={channelName} channelType={channelType} conversationKind={conversationKind} serverName={serverName} automated={automated} sealing={sealing} />
+            <div className="flex grow flex-col items-center justify-center gap-4" style={{ paddingBottom: "16px" }}>
+              {cloudWelcomeHost ? (
+                <CloudWelcome host={cloudWelcomeHost} serverName={serverName ?? cloudWelcomeHost} />
+              ) : (
+                <>
+                  <WelcomeMessage channelName={channelName} channelType={channelType} conversationKind={conversationKind} serverName={serverName} automated={automated} sealing={sealing} />
+                  {discordOfferHost && <DiscordOffer host={discordOfferHost} />}
+                </>
+              )}
             </div>
           )}
           {!showVoiceDisabled && !isLoadingMessages && chatMessages.length > 0 && showMessages && (
@@ -1163,6 +1190,7 @@ export const ChatView = memo(({
             </div>
           ) : (
           <>
+          {serverHost && <StorageFull host={serverHost} serverName={serverName ?? serverHost} isOwner={isOwner === true} />}
           <TypingIndicator typingUsers={typingUsers} serverHost={serverHost} nameTags={nameTagsFor(memberList)} />
           <ChatEditorBar
             replyingTo={replyingTo}

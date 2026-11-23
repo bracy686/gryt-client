@@ -1,9 +1,11 @@
 /* Hallmark · component: dialog · genre: modern-minimal · theme: @gryt/ui (design.md)
  * states carried by @gryt/ui Button, Spinner and Alert; the QR is the one new element. */
-import type { HistoryProgress, NewDeviceState } from "@gryt/core";
+import { type HistoryProgress, type NewDeviceState, qrArt } from "@gryt/core";
 import { Alert, Button, Dialog, IconButton, Progress } from "@gryt/ui";
 import { useMemo, useRef } from "react";
 import { encode } from "uqr";
+
+import { LogoIcon } from "@/common";
 
 import { PiX } from "../lib/icons";
 import { type NewDeviceInFlight, newDeviceSteps, useWakeLock } from "../lib/pairing/linkSteps";
@@ -18,23 +20,19 @@ export function QrCode({
   label = "Code to scan from your other device",
   className = "h-52 w-52",
 }: { text: string; label?: string; className?: string }) {
-  const path = useMemo(() => {
-    const { data } = encode(text, { ecc: "M", border: 0 });
-    let d = "";
-    data.forEach((row, y) => row.forEach((dark, x) => { if (dark) d += `M${x} ${y}h1v1h-1z`; }));
-    return { d, size: data.length };
-  }, [text]);
+  // Level H: the owl covers the middle, and H still reads with about 30% of the code missing.
+  const art = useMemo(() => qrArt(encode(text, { ecc: "H", border: 0 }).data), [text]);
+  const box = art.size + 6;
 
   return (
-    <svg
-      role="img"
-      aria-label={label}
-      viewBox={`-3 -3 ${path.size + 6} ${path.size + 6}`}
-      className={`${className} rounded-[var(--gryt-radius-md)]`}
-      shapeRendering="crispEdges"
-    >
-      <rect x={-3} y={-3} width={path.size + 6} height={path.size + 6} fill="#fff" />
-      <path d={path.d} fill="#000" />
+    <svg role="img" aria-label={label} viewBox={`-3 -3 ${box} ${box}`} className={className}>
+      <rect x={-3} y={-3} width={box} height={box} rx={3} fill="#fff" />
+      <path d={art.finders + art.dots} fill="#000" />
+      {art.logo && (
+        <g transform={`translate(${art.logo.x} ${art.logo.y})`}>
+          <LogoIcon size={art.logo.size} />
+        </g>
+      )}
     </svg>
   );
 }
@@ -133,14 +131,18 @@ function Body({ state, replaces, history }: { state: NewDeviceState | null; repl
       return (
         <div className="flex flex-col items-center gap-4">
           <Dialog.Description className="m-0 self-stretch">
-            Point your phone&rsquo;s camera at this. Gryt opens there and asks &ldquo;Is this your
-            computer?&rdquo;. Check the pictures match, tap Approve, and you&rsquo;re done.
+            On your other device, open Settings, Your devices, Link a device, and type this code. Check the pictures
+            match on both screens, and you&rsquo;re done.
           </Dialog.Description>
-          <QrCode text={`gryt://link?p=${encodeURIComponent(state.qr)}`} />
-          <span className="text-sm text-gryt-muted">Or on your other device, open Link a device and type</span>
-          <code className="font-mono text-2xl tracking-[0.2em] text-gryt-text select-all" aria-label="Code to type">
+          <code className="font-mono text-3xl tracking-[0.2em] text-gryt-text select-all" aria-label="Code to type">
             {state.code}
           </code>
+          <details className="self-stretch text-sm">
+            <summary className="gryt-link cursor-pointer text-center">Approving from your phone? Show a QR code</summary>
+            <div className="mt-3 flex justify-center">
+              <QrCode text={`gryt://link?p=${encodeURIComponent(state.qr)}`} />
+            </div>
+          </details>
           {state.renewed === "timed_out" && (
             <span className="text-xs text-gryt-muted">The last one wasn&rsquo;t approved in time, so this is a new code.</span>
           )}
@@ -177,7 +179,7 @@ function Body({ state, replaces, history }: { state: NewDeviceState | null; repl
       return (
         <div className="flex flex-col gap-3">
           <Alert severity={state.reason === "mismatch" || state.reason === "tampered" ? "error" : "info"}>
-            {newDeviceEndText(state.reason)}
+            {newDeviceEndText(state.reason, state.detail)}
           </Alert>
           <div className="flex flex-wrap gap-2">
             {state.reason === "history_failed" ? (

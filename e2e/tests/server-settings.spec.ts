@@ -13,8 +13,10 @@ async function openServerSettings(page: Page): Promise<Locator> {
 }
 
 /** A webhook URL doesn't wrap, which is what pushed the dialog wide in GRYT-1199. */
-async function createWebhook(dialog: Locator) {
-  const panel = dialog.getByRole("tabpanel", { name: "Webhooks" });
+async function createWebhook(dialog: Locator, openRail = async () => {}) {
+  const panel = dialog.getByRole("tabpanel", { name: "Integrations" });
+  await openRail();
+  await dialog.locator('nav[aria-label="Settings pages"]').getByRole("button", { name: "Webhooks", exact: true }).click();
   await panel.getByRole("button", { name: "Create webhook" }).click();
   await expect(panel.getByText(/\/api\/webhooks\/[^/]+\/[^/]+$/).first()).toBeVisible();
 }
@@ -32,13 +34,13 @@ async function expectNoOverflow(dialog: Locator, tab: string) {
 test("server settings at 1280px: no tab runs past the dialog", async ({ owner }) => {
   const dialog = await openServerSettings(owner.page);
   const tabs = await dialog.getByRole("tablist", { name: "Server settings" }).getByRole("tab").allInnerTexts();
-  expect(tabs.length, "the owner should see every tab").toBeGreaterThanOrEqual(12);
+  expect(tabs.length, "the owner should see every tab").toBeGreaterThanOrEqual(9);
 
   const pick = async (tab: string) => {
     await dialog.getByRole("tab", { name: tab, exact: true }).click();
     await expect(dialog.getByRole("tab", { name: tab, exact: true })).toHaveAttribute("aria-selected", "true");
   };
-  await pick("Webhooks");
+  await pick("Integrations");
   await createWebhook(dialog);
 
   for (const tab of tabs) {
@@ -54,24 +56,28 @@ test("server settings on a 390px phone: no tab runs past the dialog", async ({ n
   const phone = await newMember({ phone: true, server: await freshServer(), label: "phone owner" });
   await phone.page.getByRole("button", { name: "Open channels" }).click();
   const dialog = await openServerSettings(phone.page);
-  await expect(dialog.getByRole("tablist", { name: "Server settings" })).toBeHidden();
+  // The rail is a drawer behind a menu button; closed, it's inert and out of the way.
+  const nav = dialog.locator('nav[aria-label="Settings pages"]');
+  await expect(nav).toHaveAttribute("data-open", "false");
+  const openMenu = async () => {
+    if ((await nav.getAttribute("data-open")) === "true") return;
+    await dialog.getByRole("button", { name: "Settings pages" }).click();
+    await expect(nav).toHaveAttribute("data-open", "true");
+  };
 
-  const picker = dialog.locator('[role="combobox"]:not([role="tabpanel"] [role="combobox"])');
-  const options = phone.page.getByRole("listbox").getByRole("option");
-  await picker.click();
-  await expect(options.first()).toBeVisible();
-  const tabs = await options.allInnerTexts();
-  await phone.page.keyboard.press("Escape");
-  await expect(options.first()).toBeHidden();
-  expect(tabs.length, "the owner should see every tab").toBeGreaterThanOrEqual(12);
+  await openMenu();
+  await expect(nav).toBeInViewport({ ratio: 1 });
+  const tabs = await nav.getByRole("tab").allInnerTexts();
+  expect(tabs.length, "the owner should see every tab").toBeGreaterThanOrEqual(9);
 
   const pick = async (tab: string) => {
-    await picker.click();
-    await phone.page.getByRole("option", { name: tab, exact: true }).click();
-    await expect(picker).toHaveText(tab);
+    await openMenu();
+    await nav.getByRole("tab", { name: tab, exact: true }).click();
+    await expect(nav).toHaveAttribute("data-open", "false");
+    await expect(dialog.getByText(tab, { exact: true }).first()).toBeVisible();
   };
-  await pick("Webhooks");
-  await createWebhook(dialog);
+  await pick("Integrations");
+  await createWebhook(dialog, openMenu);
 
   for (const tab of tabs) {
     await pick(tab);

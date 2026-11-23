@@ -2,9 +2,14 @@
  * Fetches and caches identity certificates from the Gryt Identity Service. A
  * certificate is **not a bearer token** — it only proves ownership of a key.
  */
+import type { KeyBookEntry } from "@gryt/core";
+
 import { getGrytConfig } from "../../../../config";
+import { isElectron } from "../../../../lib/electron";
+import { describeThisDevice } from "../../../../lib/pairing/device";
+import { setPendingApproveTicket } from "./approve-ticket";
 import { certificateVerdict } from "./certificate-verdict";
-import { asIdentityScope, clearIdentityKeys, deriveScopedKeyPair, getPublicKeyJwk, signJwtWithKey } from "./identity-keys";
+import { asIdentityScope, clearIdentityKeys, deriveScopedKeyPair, getPublicKeyJwk, sealedDeviceName, signJwtWithKey } from "./identity-keys";
 import { decodeJwt } from "./jwt";
 import { getValidIdentityToken } from "./keycloak";
 import { jwkThumbprint } from "./server-pins";
@@ -88,6 +93,14 @@ export function clearIdentityCertificate(): void {
 
 let fetchPromise: Promise<string> | null = null;
 
+let thisDeviceName: string | undefined;
+/** Set once at start. Sent sealed: only your own devices can read it in your list of keys. */
+export function setAccountDeviceName(name: string): void {
+  thisDeviceName = name;
+}
+
+const sealedName = () => (thisDeviceName ? sealedDeviceName(thisDeviceName).catch(() => undefined) : Promise.resolve(undefined));
+
 async function fetchCertificateFromService(): Promise<string> {
   const cfg = getGrytConfig();
   const identityUrl = cfg.GRYT_IDENTITY_URL.replace(/\/+$/, "");
@@ -106,12 +119,13 @@ async function fetchCertificateFromService(): Promise<string> {
       "Content-Type": "application/json",
       Authorization: `Bearer ${keycloakToken}`,
     },
-    body: JSON.stringify({ jwk: publicJwk, proof }),
+    body: JSON.stringify({ jwk: publicJwk, proof, device: await sealedName(), deviceType: thisDeviceType() }),
   });
 
   if (res.status === 403) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string; resetAt?: number | null };
+    const body = (await res.json().catch(() => ({}))) as { error?: string; resetAt?: number | null; ticket?: string };
     if (body.error === "approval_required") {
+      setPendingApproveTicket(typeof body.ticket === "string" ? body.ticket : null);
       window.dispatchEvent(new CustomEvent("gryt:sign-in-approval", { detail: { resetAt: body.resetAt ?? null } }));
       throw new Error("This sign-in needs approving from one of your devices.");
     }
@@ -219,8 +233,29 @@ async function seedProof(keycloakToken: string, certJwk: JsonWebKey): Promise<st
   );
 }
 
+/** A server's binding signed by the account key, so the server takes it without an older device's handover. */
+export async function accountKeyProof(binding: string): Promise<string> {
+  const { privateKey, publicJwk } = await deriveScopedKeyPair(ACCOUNT_CERT_SCOPE);
+  const { kty, crv, x, y } = publicJwk;
+  return signJwtWithKey({ binding, iat: Math.floor(Date.now() / 1000) }, privateKey, { jwk: { kty, crv, x, y } });
+}
+
+/** This device's account key, as the key book names it. */
+export async function accountKeyThumbprint(): Promise<string> {
+  return jwkThumbprint((await deriveScopedKeyPair(ACCOUNT_CERT_SCOPE)).publicJwk);
+}
+
+/** The public key book for one account. Null when the identity service doesn't answer. */
+export async function fetchKeyBook(sub: string): Promise<KeyBookEntry[] | null> {
+  const identityUrl = getGrytConfig().GRYT_IDENTITY_URL.replace(/\/+$/, "");
+  const res = await fetch(`${identityUrl}/api/v1/account-key/book/${encodeURIComponent(sub)}`).catch(() => null);
+  if (!res?.ok) return null;
+  const body = (await res.json().catch(() => null)) as { book?: unknown } | null;
+  return Array.isArray(body?.book) ? (body.book as KeyBookEntry[]) : null;
+}
+
 /** The account service's view of this device's seed key: on record, and any reset under way. */
-export async function accountKeyCall(path: "status" | "reset" | "reset/cancel"): Promise<{ known?: boolean; resetAt?: number | null; resetIsYours?: boolean; at?: number; ok?: boolean } | null> {
+export async function accountKeyCall(path: "status" | "reset" | "reset/cancel" | "claim"): Promise<{ known?: boolean; multi?: boolean; result?: "kept" | "single"; resetAt?: number | null; resetIsYours?: boolean; at?: number; ok?: boolean } | null> {
   const token = await getValidIdentityToken().catch(() => undefined);
   if (!token) return null;
   const jwk = await getPublicKeyJwk();
@@ -228,7 +263,13 @@ export async function accountKeyCall(path: "status" | "reset" | "reset/cancel"):
   const res = await fetch(`${identityUrl}/api/v1/account-key/${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ jwk, proof: await seedProof(token, jwk) }),
+    body: JSON.stringify({ jwk, proof: await seedProof(token, jwk), device: await sealedName() }),
   }).catch(() => null);
   return res?.ok ? res.json() : null;
+}
+
+/** "Mac", "Windows PC", "Chrome on Linux": what your other devices' prompt calls this one. Not its own name. */
+function thisDeviceType(): string {
+  const d = describeThisDevice(navigator.userAgent, isElectron());
+  return d.app === "Gryt desktop" ? d.name : `${d.name} on ${d.platform}`;
 }

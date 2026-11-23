@@ -5,6 +5,12 @@ on:
   push:
     branches: [main]
 
+# A new push to a pull request replaces the run still going. Main gets a group per run, since a
+# shared group would still drop a queued run there even without cancel-in-progress.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -26,7 +32,9 @@ jobs:
       - run: yarn test:update-supersede
       - run: yarn test:update-in-progress
       - run: yarn test:dm-destination
+      - run: yarn test:peer-voice-sounds
       - run: yarn test:stream-quality
+      - run: yarn test:picture-crop
       - run: yarn test:doctor-sfu
       - run: yarn test:narrow-dm-parity
       - run: yarn test:unread-split
@@ -133,6 +141,7 @@ jobs:
       - run: yarn test:notification-text
       - run: yarn test:mention-tokens
       - run: yarn test:call-timeline
+      - run: yarn test:report-log-window
       - run: yarn test:name-tags
       - run: yarn test:edit-mentions
       - run: yarn test:hotkeys
@@ -161,9 +170,9 @@ jobs:
       - run: yarn test:local-archive
       - run: yarn test:discord-import
       - run: yarn test:mls-dm
+      - run: yarn test:approve-ticket
       - run: yarn test:mls-restart
       - run: yarn test:clear-local-history
-      - run: yarn test:member-key-wording
       - run: yarn test:owl-export
       - run: yarn test:owl-seen
       - run: yarn test:welcome-tour
@@ -171,6 +180,7 @@ jobs:
       - run: yarn test:builder-config
       - run: yarn test:helper-packaging
       - run: yarn test:server-order
+      - run: yarn test:carry-guest-servers
       - run: yarn test:tile-contrast
       - run: yarn test:card-byline
       - run: yarn test:link-preview-retry
@@ -262,6 +272,7 @@ jobs:
       # No comment runs past two lines. The script carries the list of paths
       # still to be swept, and that list only ever shrinks.
       - run: yarn test:comment-length
+      - run: yarn test:quick-reactions
       - run: yarn test:script-paths
       - run: yarn test:window-buttons
       - run: yarn test:scan-consent
@@ -326,7 +337,8 @@ jobs:
       - if: runner.os == 'Linux'
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
-      - run: go test -count=1 ./...
+      # Under the job's 15-minute limit, so a hang fails with a stack trace instead of being cancelled with no log.
+      - run: go test -count=1 -v -timeout 5m ./...
 
   # verify runs the check scripts on ubuntu only, so twenty of them were failing on a
   # Windows checkout with nothing anywhere to notice. Globbed, because a second list drifts.
@@ -422,7 +434,7 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       GRYT_E2E_SHARD: ${{ matrix.shard }}
@@ -472,8 +484,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: yarn
-      - run: yarn install --frozen-lockfile
       # The report is a convenience. Only the shards' result below decides this job.
       - uses: actions/download-artifact@v4
         continue-on-error: true
@@ -481,7 +491,8 @@ jobs:
           pattern: blob-report-*
           path: e2e/all-blob-reports
           merge-multiple: true
-      - run: yarn playwright merge-reports --reporter=html e2e/all-blob-reports
+      # Only Playwright is needed, so it comes from npm at the lockfile's version rather than a full install.
+      - run: npx -y "playwright@$(sed -n 's/^playwright@\(.*\):$/\1/p' yarn.lock)" merge-reports --reporter=html e2e/all-blob-reports
         continue-on-error: true
         env:
           PLAYWRIGHT_HTML_REPORT: e2e/playwright-report
